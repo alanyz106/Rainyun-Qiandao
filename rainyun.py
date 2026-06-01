@@ -1345,7 +1345,7 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
         return None
 
 
-def compress_screenshot(input_path, output_path, max_width=800, quality=35):
+def compress_screenshot(input_path, output_path, max_width=1920, quality=85):
     """先本地 Pillow 压缩，如果配置了 TinyPNG 则二次压缩"""
     result = compress_with_pillow(input_path, output_path, max_width, quality)
     if not result:
@@ -1405,7 +1405,7 @@ def compress_with_tinypng(input_path, output_path, api_key):
         return None
 
 
-def compress_with_pillow(input_path, output_path, max_width=1280, quality=40):
+def compress_with_pillow(input_path, output_path, max_width=1920, quality=85):
     """使用 Pillow 本地压缩"""
     try:
         from PIL import Image
@@ -1815,7 +1815,7 @@ class TencentCaptchaProvider(CaptchaProvider):
             retry_stats = {'count': 0}
             
         try:
-            wait = WebDriverWait(driver, min(timeout, 3))
+            wait = WebDriverWait(driver, min(timeout, 10))
             try:
                 wait.until(EC.presence_of_element_located((By.ID, "slideBg")))
             except TimeoutException:
@@ -3023,7 +3023,7 @@ def wait_captcha_or_modal(driver, timeout):
                 continue
         return None
 
-    end_time = time.time() + min(timeout, 8)
+    end_time = time.time() + min(timeout, 20)
     while time.time() < end_time:
         if dismiss_modal_confirm(driver, timeout):
             return "modal"
@@ -3243,7 +3243,9 @@ def run_checkin(account_user=None, account_pwd=None):
         if btn_text == "领取奖励":
             logger_adapter.info("点击领取奖励")
             earn.click()
-            state = wait_captcha_or_modal(driver, timeout)
+            # 点击后等待验证码或弹窗，签到场景下增加等待时间（比登录更长）
+            captcha_timeout = max(timeout, 20)  # 签到验证码至少等 20 秒
+            state = wait_captcha_or_modal(driver, captcha_timeout)
             if state == "captcha":
                 logger_adapter.info("处理验证码")
                 try:
@@ -3256,6 +3258,34 @@ def run_checkin(account_user=None, account_pwd=None):
                 driver.implicitly_wait(5)
             else:
                 logger_adapter.info("未触发验证码")
+
+            # 验证签到是否成功：等待并重新读取按钮文字
+            time.sleep(2)
+            retry_check = 0
+            while retry_check < 3:
+                try:
+                    earn_verify = driver.find_element(By.XPATH,
+                        '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
+                    btn_after = earn_verify.text.strip()
+                    if btn_after != "领取奖励":
+                        logger_adapter.info(f"签到验证通过，按钮文字变为: [{btn_after}]")
+                        break
+                    logger_adapter.warning(f"签到后按钮文字仍为 [领取奖励]，等待重试 ({retry_check+1}/3)")
+                    time.sleep(3)
+                    retry_check += 1
+                except Exception:
+                    logger_adapter.warning("签到后读取按钮异常，继续等待...")
+                    time.sleep(3)
+                    retry_check += 1
+            else:
+                # 重试 3 次后按钮仍未变化，说明签到失败
+                logger_adapter.error("签到验证失败：点击领取奖励后按钮文字未改变")
+                screenshot_path = save_screenshot(driver, current_user, status="failure")
+                return {
+                    'status': False, 'msg': '签到失败：验证码未正确处理或签到未生效', 'points': 0,
+                    'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path
+                }
         else:
             logger_adapter.info(f"今日已签到（按钮显示: {btn_text}）")
 

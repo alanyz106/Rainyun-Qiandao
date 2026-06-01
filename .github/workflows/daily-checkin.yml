@@ -99,3 +99,4 @@ jobs:
           name: checkin-logs-${{ github.run_number }}
           path: logs/
           retention-days: 7
+
