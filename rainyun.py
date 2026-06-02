@@ -3581,11 +3581,11 @@ def run_checkin(account_user=None, account_pwd=None):
                 }
 
         btn_text = earn.text.strip()
-        logger_adapter.info(f"签到按钮文字: [{btn_text}]")
+        logger_adapter.info(f"签到按钮当前状态: [{btn_text}]")
 
         # 只有包含"领取奖励"才需要点击，其他情况视为已完成
         if "领取奖励" in btn_text:
-            logger_adapter.info("点击领取奖励")
+            logger_adapter.info("开始点击领取奖励...")
             earn.click()
             # 点击后等待验证码或弹窗，签到场景下增加等待时间（比登录更长）
             captcha_timeout = max(timeout, 20)  # 签到验证码至少等 20 秒
