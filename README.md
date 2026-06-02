@@ -246,7 +246,32 @@ http://192.168.1.1:8080
 
 #### 网页加载缓慢，尝试延长超时等待时间或更换连接性更好的国内主机。
 
+## 项目结构
+
+```
+Rainyun-Qiandao/
+├── rainyun.py                 # 入口文件
+├── rainyun/                   # 功能模块包
+│   ├── config.py              # 配置、日志、时区、进程管理
+│   ├── notifications.py       # 通知渠道（PushPlus/WXPusher/钉钉/邮件）
+│   ├── browser.py             # 浏览器初始化、指纹脚本、代理IP
+│   ├── captcha.py             # 验证码破解（OCR/腾讯滑块/2captcha）
+│   ├── report.py              # 签到报告生成、截图处理
+│   ├── account.py             # 账号解析、Cookie管理
+│   └── checkin.py             # 签到核心逻辑、多账号并发、定时调度
+├── .github/workflows/         # GitHub Actions 工作流配置
+├── Dockerfile                 # Docker 镜像构建
+├── docker-compose.yml         # Docker Compose 编排
+├── requirements.txt           # Python 依赖
+└── stealth.min.js             # 反检测脚本
+```
+
 ## 更新日志
+
+### 2026-06-02
+- 重构项目结构，按功能模块拆分为 `rainyun/` 子包，提高代码可维护性。
+- 原 `rainyun.py` 从 3907 行精简为入口文件，核心逻辑分散到 7 个独立模块中。
+- 更新 GitHub Actions 配置，同步跟踪包文件变更。
 
 ### 2026-01-29
 - 修复因前端弹窗导致的签到失败问题，优化自动化交互逻辑。
