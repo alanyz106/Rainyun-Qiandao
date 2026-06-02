@@ -3538,50 +3538,36 @@ def run_checkin(account_user=None, account_pwd=None):
         dismiss_modal_confirm(driver, timeout)
         dismiss_modal_confirm(driver, timeout)
 
-        # 使用多种策略定位签到按钮，兼容页面结构变化
-        # 页面结构：未完成时是 <a class="badge badge-success">领取奖励</a>
-        #           已完成时是 <span class="badge badge-secondary">已完成</span>
-        # 因此不能只匹配 <a> 标签，需要同时匹配 <a> 和 <span>
+        # 定位"每日签到"任务的状态按钮
+        # 页面结构：<span>每日签到</span> 同级有 <span class="badge ...">已完成</span> 或 <a class="badge ...">领取奖励</a>
+        # 关键：必须精确定位到"每日签到"对应的 badge，不能匹配其他任务的 badge
 
-        # 策略1：通过 badge 类名匹配（最精准）
-        checkin_btn_xpath = '//*[contains(@class, "badge") and (contains(text(), "领取奖励") or contains(text(), "已完成"))]'
+        # 策略1：通过"每日签到"文本定位其父元素，再找同级的 badge
+        checkin_xpath = '//span[contains(text(), "每日签到")]/ancestor::*[contains(@class, "card-header")][1]//span[contains(@class, "badge")]'
 
-        # 策略2：通过父元素包含"每日签到"来定位
-        checkin_parent_xpath = '//*[contains(text(), "每日签到")]/ancestor::*[1]//span[contains(@class, "badge")]'
-
-        # 策略3：宽泛匹配（兜底）
-        checkin_fallback_xpath = '//span[contains(@class, "badge") and (contains(text(), "领取奖励") or contains(text(), "已完成"))]'
+        # 策略2：用更宽泛的方式，找包含"每日签到"的卡片内的 badge
+        checkin_xpath_fallback = '//div[contains(@class, "card")]//span[contains(text(), "每日签到")]/../..//span[contains(@class, "badge")]'
 
         earn = None
-        for xpath in [checkin_btn_xpath, checkin_parent_xpath, checkin_fallback_xpath]:
+        for xpath in [checkin_xpath, checkin_xpath_fallback]:
             try:
                 earn = WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.XPATH, xpath))
                 )
-                logger_adapter.debug(f"使用 XPath 策略找到签到按钮: {xpath[:50]}...")
                 break
             except TimeoutException:
                 continue
 
         if earn is None:
-            # 最后尝试：直接搜索包含"每日签到"的卡片区域
-            logger_adapter.warning("所有 XPath 策略均失败，尝试卡片区域匹配...")
-            try:
-                earn = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.XPATH,
-                        '//div[contains(@class, "card-header")]//span[contains(text(), "每日签到")]/..//span[contains(@class, "badge")]'))
-                )
-            except TimeoutException:
-                logger_adapter.error("无法找到签到按钮，页面结构可能已完全改变")
-                screenshot_path = save_screenshot(driver, current_user, status="failure")
-                return {
-                    'status': False, 'msg': '签到按钮未找到', 'points': 0,
-                    'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                    'retries': retry_stats['count'], 'screenshot': screenshot_path
-                }
+            logger_adapter.error("无法找到每日签到按钮")
+            screenshot_path = save_screenshot(driver, current_user, status="failure")
+            return {
+                'status': False, 'msg': '签到按钮未找到', 'points': 0,
+                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                'retries': retry_stats['count'], 'screenshot': screenshot_path
+            }
 
         btn_text = earn.text.strip()
-        logger_adapter.info(f"签到按钮当前状态: [{btn_text}]")
 
         # 只有包含"领取奖励"才需要点击，其他情况视为已完成
         if "领取奖励" in btn_text:
@@ -3609,22 +3595,15 @@ def run_checkin(account_user=None, account_pwd=None):
             checkin_success = False
             while retry_check < 5 and not checkin_success:
                 try:
-                    # 策略1：用文本匹配重新查找按钮，兼容页面重渲染
                     earn_verify = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH, checkin_btn_xpath))
+                        EC.presence_of_element_located((By.XPATH, checkin_xpath))
                     )
                     btn_after = earn_verify.text.strip()
-                    if "已完成" in btn_after:
-                        logger_adapter.info(f"签到验证通过，按钮文字变为: [{btn_after}]")
-                        checkin_success = True
-                        break
-                    # 如果不再包含"领取奖励"，可能 XPath 匹配到了页面其他区域的同文按钮
-                    if "领取奖励" not in btn_after:
+                    if "已完成" in btn_after or "领取奖励" not in btn_after:
                         logger_adapter.info(f"签到验证通过，按钮文字变为: [{btn_after}]")
                         checkin_success = True
                         break
                 except TimeoutException:
-                    # 按钮可能因页面重渲染而消失，这是正常的
                     logger_adapter.debug("等待签到按钮超时，尝试检查页面文字...")
                 except Exception:
                     pass
