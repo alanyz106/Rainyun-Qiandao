@@ -10,6 +10,7 @@ on:
     paths:
       - '.github/workflows/daily-checkin.yml'
       - 'rainyun.py'
+      - 'rainyun/**'
       - 'requirements.txt'
 
   # 手动触发（方便测试）
