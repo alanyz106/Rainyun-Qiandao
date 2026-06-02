@@ -2958,13 +2958,317 @@ class TencentCaptchaProvider(CaptchaProvider):
         return self._compute_score_from_images(sprite_img, spec_img, ocr, sprite_profile=sprite_profile)
 
 
+class TwoCaptchaProvider(CaptchaProvider):
+    """使用 2captcha API 破解腾讯点选验证码"""
+
+    API_BASE = "https://2captcha.com"
+
+    def __init__(self):
+        self.api_key = os.getenv("TWOCAPTCHA_API_KEY", "").strip()
+
+    def solve(self, driver, timeout, retry_stats, logger_adapter):
+        # 导入Selenium模块
+        modules = import_selenium_modules()
+        WebDriverWait = modules['WebDriverWait']
+        EC = modules['EC']
+        By = modules['By']
+        ActionChains = modules['ActionChains']
+        TimeoutException = modules['TimeoutException']
+
+        if retry_stats is None:
+            retry_stats = {'count': 0}
+
+        try:
+            wait = WebDriverWait(driver, min(timeout, 10))
+            try:
+                wait.until(EC.presence_of_element_located((By.ID, "slideBg")))
+            except TimeoutException:
+                logger_adapter.info("未检测到可处理验证码内容，跳过验证码处理")
+                return
+
+            wait = WebDriverWait(driver, timeout)
+            self._download_captcha_img(driver, timeout, logger_adapter)
+
+            # 分割待选图块
+            import cv2
+            raw_sprite = cv2.imread("temp/sprite.jpg")
+            if raw_sprite is not None:
+                w_raw = raw_sprite.shape[1]
+                for i in range(3):
+                    temp = raw_sprite[:, w_raw // 3 * i: w_raw // 3 * (i + 1)]
+                    cv2.imwrite(f"temp/sprite_{i + 1}.jpg", temp)
+
+            # 构建组合图片：上方拼3个目标图案，下方放验证码底图
+            combined = self._build_combined_image(logger_adapter)
+            combined_path = "temp/combined_captcha.jpg"
+            cv2.imwrite(combined_path, combined)
+            sprite_strip_h = combined.shape[0] - cv2.imread("temp/captcha.jpg").shape[0]
+
+            # 提交到 2captcha
+            click_coords = self._submit_to_2captcha(combined_path, logger_adapter, timeout)
+            if not click_coords:
+                logger_adapter.error("2captcha 未能返回有效坐标")
+                retry_stats['count'] += 1
+                time.sleep(3)
+                return self.solve(driver, timeout, retry_stats, logger_adapter)
+
+            # 过滤掉点击在图案提示区域的坐标（y < sprite_strip_h 的属于 sprites 区域）
+            captcha_coords = []
+            for x, y in click_coords:
+                if y >= sprite_strip_h:
+                    adj_y = y - sprite_strip_h
+                    captcha_coords.append((x, adj_y))
+                else:
+                    logger_adapter.debug(f"忽略在图案提示区域的点击: ({x}, {y})")
+
+            if len(captcha_coords) < 3:
+                logger_adapter.error(f"有效点击坐标不足3个 (仅 {len(captcha_coords)} 个)，刷新重试")
+                retry_stats['count'] += 1
+                time.sleep(3)
+                return self.solve(driver, timeout, retry_stats, logger_adapter)
+
+            # 最多取前3个坐标执行点击
+            final_coords = captcha_coords[:3]
+
+            # 执行点击
+            slideBg = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="slideBg"]')))
+            style = slideBg.get_attribute("style")
+            captcha_img = cv2.imread("temp/captcha.jpg")
+            width_raw, height_raw = captcha_img.shape[1], captcha_img.shape[0]
+
+            import re
+            width = float(re.search(r'width:\s*([\d.]+)px', style).group(1))
+            height = float(re.search(r'height:\s*([\d.]+)px', style).group(1))
+            x_offset, y_offset = float(-width / 2), float(-height / 2)
+
+            for x, y in final_coords:
+                final_x = int(x_offset + x / width_raw * width)
+                final_y = int(y_offset + y / height_raw * height)
+                ActionChains(driver).move_to_element_with_offset(slideBg, final_x, final_y).click().perform()
+                time.sleep(0.3)
+
+            # 提交验证
+            confirm = wait.until(EC.element_to_be_clickable(
+                (By.XPATH, '//*[@id="tcStatus"]/div[2]/div[2]/div/div')))
+            logger_adapter.info("提交验证码")
+            time.sleep(0.5)
+            confirm.click()
+            time.sleep(3)
+
+            # 检查是否通过
+            result_elem = wait.until(EC.visibility_of_element_located(
+                (By.XPATH, '//*[@id="tcOperation"]')))
+            if result_elem.get_attribute("class") == 'tc-opera pointer show-success':
+                logger_adapter.info("验证码通过 🎉")
+                return
+            else:
+                logger_adapter.error("2captcha 验证码提交后未通过")
+                retry_stats['count'] += 1
+                time.sleep(3)
+                return self.solve(driver, timeout, retry_stats, logger_adapter)
+
+        except TimeoutException:
+            logger_adapter.error("获取验证码元素超时")
+        except Exception as e:
+            logger_adapter.error(f"2captcha 执行流程中发生错误: {e}")
+            import traceback
+            logger_adapter.debug(traceback.format_exc())
+            retry_stats['count'] += 1
+            try:
+                reload_btn = driver.find_element(By.XPATH, '//*[@id="reload"]')
+                reload_btn.click()
+                time.sleep(3)
+                return self.solve(driver, timeout, retry_stats, logger_adapter)
+            except Exception:
+                pass
+        finally:
+            logger_adapter.debug("2captcha 单次处理周期完毕")
+
+    def _download_captcha_img(self, driver, timeout, logger_adapter):
+        modules = import_selenium_modules()
+        WebDriverWait = modules['WebDriverWait']
+        EC = modules['EC']
+        By = modules['By']
+
+        wait = WebDriverWait(driver, timeout)
+        if os.path.exists("temp"):
+            for filename in os.listdir("temp"):
+                file_path = os.path.join("temp", filename)
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.remove(file_path)
+
+        try:
+            current_ua = driver.execute_script("return navigator.userAgent;")
+            logger_adapter.debug(f"下载图片使用 UA: {current_ua[:50]}...")
+        except Exception:
+            current_ua = None
+
+        slideBg = wait.until(EC.visibility_of_element_located(
+            (By.XPATH, '//*[@id="slideBg"]')))
+        img1_style = slideBg.get_attribute("style")
+
+        import re
+        img1_url = re.search(r'url\(["\']?(.*?)["\']?\)', img1_style).group(1)
+        logger_adapter.info("开始下载验证码图片(1): " + img1_url)
+        download_image(img1_url, "captcha.jpg", user_agent=current_ua)
+
+        sprite = wait.until(EC.visibility_of_element_located(
+            (By.XPATH, '//*[@id="instruction"]/div/img')))
+        img2_url = sprite.get_attribute("src")
+        logger_adapter.info("开始下载验证码图片(2): " + img2_url)
+        download_image(img2_url, "sprite.jpg", user_agent=current_ua)
+
+    def _build_combined_image(self, logger_adapter):
+        import cv2
+        import numpy as np
+
+        captcha = cv2.imread("temp/captcha.jpg")
+        if captcha is None:
+            logger_adapter.error("无法读取 captcha.jpg")
+            raise FileNotFoundError("captcha.jpg not found")
+
+        # 读取并水平拼接3个sprite
+        sprite_parts = []
+        for i in range(3):
+            sprite = cv2.imread(f"temp/sprite_{i + 1}.jpg")
+            if sprite is not None:
+                # 统一高度为 captcha 宽度的 8%
+                target_h = int(captcha.shape[1] * 0.08)
+                scale = target_h / sprite.shape[0]
+                new_w = int(sprite.shape[1] * scale)
+                sprite = cv2.resize(sprite, (new_w, target_h), interpolation=cv2.INTER_AREA)
+                sprite_parts.append(sprite)
+
+        if not sprite_parts:
+            logger_adapter.warning("未能读取sprite图片，直接使用captcha.jpg")
+            return captcha
+
+        sprite_strip = np.hstack(sprite_parts)
+
+        # sprites 和 captcha 之间加一条分隔线
+        line_h = 4
+        line = np.full((line_h, captcha.shape[1], 3), (200, 200, 200), dtype=np.uint8)
+
+        # 将 sprite_strip 居中放在 captcha 宽度的画布上
+        sprite_canvas = np.full((sprite_strip.shape[0], captcha.shape[1], 3),
+                                255, dtype=np.uint8)
+        x_offset = (captcha.shape[1] - sprite_strip.shape[1]) // 2
+        sprite_canvas[:, x_offset:x_offset + sprite_strip.shape[1]] = sprite_strip
+
+        # 垂直拼接
+        combined = np.vstack([sprite_canvas, line, captcha])
+        logger_adapter.debug(f"组合图片尺寸: {combined.shape[1]}x{combined.shape[0]}")
+        return combined
+
+    def _submit_to_2captcha(self, image_path, logger_adapter, timeout):
+        import requests
+        import base64
+
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        api_key = self.api_key
+        if not api_key:
+            logger_adapter.error("TWOCAPTCHA_API_KEY 未配置")
+            return None
+
+        # 提交图片
+        submit_payload = {
+            "key": api_key,
+            "method": "base64",
+            "body": img_b64,
+            "coordinatescaptcha": 1,
+            "lang": "en",
+        }
+        try:
+            logger_adapter.info("正在提交验证码到 2captcha...")
+            resp = requests.post(f"{self.API_BASE}/in.php",
+                                 data=submit_payload, timeout=30)
+            result = resp.text.strip()
+            if not result.startswith("OK|"):
+                logger_adapter.error(f"2captcha 提交失败: {result}")
+                return None
+
+            captcha_id = result[3:]
+            logger_adapter.info(f"2captcha 任务已提交, ID: {captcha_id}")
+        except requests.RequestException as e:
+            logger_adapter.error(f"2captcha 提交请求失败: {e}")
+            return None
+
+        # 轮询结果
+        poll_params = {
+            "key": api_key,
+            "action": "get",
+            "id": captcha_id,
+        }
+        max_wait = min(timeout + 30, 150)
+        start_time = time.time()
+        poll_interval = 5
+
+        while time.time() - start_time < max_wait:
+            try:
+                resp = requests.get(f"{self.API_BASE}/res.php",
+                                    params=poll_params, timeout=10)
+                text = resp.text.strip()
+                if text == "CAPCHA_NOT_READY":
+                    time.sleep(poll_interval)
+                    continue
+                if text.startswith("OK|"):
+                    coords_str = text[3:]
+                    logger_adapter.info(f"2captcha 返回坐标: {coords_str}")
+                    return self._parse_coordinates(coords_str)
+                else:
+                    logger_adapter.error(f"2captcha 返回错误: {text}")
+                    return None
+            except requests.RequestException as e:
+                logger_adapter.error(f"2captcha 轮询请求失败: {e}")
+                time.sleep(poll_interval)
+                continue
+
+        logger_adapter.error("2captcha 验证超时")
+        return None
+
+    def _parse_coordinates(self, coords_str):
+        """解析 2captcha 返回的坐标字符串 'x=123,y=456;x=789,y=101'"""
+        coords = []
+        for part in coords_str.split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                # 支持格式: x=123,y=456 或 123,456
+                if part.startswith("x=") or part.startswith("X="):
+                    kv = part.replace("X=", "x=").replace("Y=", "y=").split(",")
+                    x = int(kv[0].split("=")[1].strip())
+                    y = int(kv[1].split("=")[1].strip())
+                else:
+                    xy = part.split(",")
+                    x = int(xy[0].strip())
+                    y = int(xy[1].strip())
+                coords.append((x, y))
+            except (ValueError, IndexError) as e:
+                logger = logging.getLogger(__name__)
+                logger.debug(f"解析坐标失败: {part} - {e}")
+                continue
+        return coords
+
 class CaptchaFactory:
     """验证码工厂类"""
     @classmethod
     def create_provider(cls, captcha_type: str = "tencent") -> CaptchaProvider:
         if captcha_type == "tencent":
             return TencentCaptchaProvider()
+        if captcha_type == "twocaptcha":
+            return TwoCaptchaProvider()
         raise ValueError(f"Unknown captcha type: {captcha_type}")
+
+
+def get_captcha_provider():
+    """根据环境变量自动选择验证码破解方案"""
+    twocaptcha_key = os.getenv("TWOCAPTCHA_API_KEY", "").strip()
+    if twocaptcha_key:
+        return CaptchaFactory.create_provider("twocaptcha")
+    return CaptchaFactory.create_provider("tencent")
 
 
 def dismiss_modal_confirm(driver, timeout):
@@ -3198,7 +3502,7 @@ def run_checkin(account_user=None, account_pwd=None):
                 login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
                 logger_adapter.warning("触发验证码！")
                 driver.switch_to.frame("tcaptcha_iframe_dy")
-                captcha_provider = CaptchaFactory.create_provider("tencent")
+                captcha_provider = get_captcha_provider()
                 captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
             except TimeoutException:
                 logger_adapter.info("未触发验证码")
@@ -3233,12 +3537,13 @@ def run_checkin(account_user=None, account_pwd=None):
         time.sleep(1)
         dismiss_modal_confirm(driver, timeout)
         dismiss_modal_confirm(driver, timeout)
-        
+
+        # 使用文本匹配定位签到按钮，避免因页面重渲染导致绝对XPath指向错误元素
         earn = driver.find_element(By.XPATH,
-                                   '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
+            '//a[.//span[contains(text(), "领取奖励") or contains(text(), "已完成")]]')
         btn_text = earn.text.strip()
         logger_adapter.info(f"签到按钮文字: [{btn_text}]")
-        
+
         # 只有"领取奖励"才需要点击，其他情况视为已完成
         if btn_text == "领取奖励":
             logger_adapter.info("点击领取奖励")
@@ -3251,7 +3556,7 @@ def run_checkin(account_user=None, account_pwd=None):
                 try:
                     captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
                     driver.switch_to.frame(captcha_iframe)
-                    captcha_provider = CaptchaFactory.create_provider("tencent")
+                    captcha_provider = get_captcha_provider()
                     captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
                 finally:
                     driver.switch_to.default_content()
@@ -3259,27 +3564,47 @@ def run_checkin(account_user=None, account_pwd=None):
             else:
                 logger_adapter.info("未触发验证码")
 
-            # 验证签到是否成功：等待并重新读取按钮文字
-            time.sleep(2)
+            # 验证签到是否成功：先等页面稳定，再用多种方式确认
+            time.sleep(3)
             retry_check = 0
-            while retry_check < 3:
+            checkin_success = False
+            while retry_check < 5 and not checkin_success:
                 try:
+                    # 策略1：用文本匹配重新查找按钮，兼容页面重渲染
                     earn_verify = driver.find_element(By.XPATH,
-                        '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
+                        '//a[.//span[contains(text(), "领取奖励") or contains(text(), "已完成")]]')
                     btn_after = earn_verify.text.strip()
+                    if "已完成" in btn_after:
+                        logger_adapter.info(f"签到验证通过，按钮文字变为: [{btn_after}]")
+                        checkin_success = True
+                        break
+                    # 如果还是"领取奖励"，可能 XPath 匹配到了页面其他区域的同文按钮
                     if btn_after != "领取奖励":
                         logger_adapter.info(f"签到验证通过，按钮文字变为: [{btn_after}]")
+                        checkin_success = True
                         break
-                    logger_adapter.warning(f"签到后按钮文字仍为 [领取奖励]，等待重试 ({retry_check+1}/3)")
-                    time.sleep(3)
-                    retry_check += 1
                 except Exception:
-                    logger_adapter.warning("签到后读取按钮异常，继续等待...")
+                    pass
+
+                if not checkin_success:
+                    # 策略2：直接在 body 中搜索"已完成"文字
+                    try:
+                        body_text = driver.find_element(By.TAG_NAME, "body").text
+                        if "已完成" in body_text:
+                            logger_adapter.info("页面检测到'已完成'，签到验证通过")
+                            checkin_success = True
+                            break
+                    except Exception:
+                        pass
+
+                if not checkin_success:
+                    logger_adapter.warning(f"签到后按钮文字仍为 [领取奖励]，等待重试 ({retry_check+1}/5)")
                     time.sleep(3)
                     retry_check += 1
-            else:
-                # 重试 3 次后按钮仍未变化，说明签到失败
-                logger_adapter.error("签到验证失败：点击领取奖励后按钮文字未改变")
+
+            if not checkin_success:
+                # 所有方式都确认失败
+                logger_adapter.error("签到验证失败：点击领取奖励后按钮状态未改变")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
                     'status': False, 'msg': '签到失败：验证码未正确处理或签到未生效', 'points': 0,
