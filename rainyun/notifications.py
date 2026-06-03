@@ -106,6 +106,7 @@ class WXPusherProvider(NotificationProvider):
 
     def send(self, title, context):
         import requests
+        import time as _time
         content = self.select_content(context)
         url = 'https://wxpusher.zjiecode.com/api/send/message'
         data = {
@@ -116,23 +117,29 @@ class WXPusherProvider(NotificationProvider):
             "uids": self.uids,
             "topicIds": self.topic_ids
         }
-        try:
-            target_desc = f"UIDs: {len(self.uids)}" if self.uids else ""
-            if self.topic_ids:
-                target_desc += (" & " if target_desc else "") + f"Topics: {len(self.topic_ids)}"
+        target_desc = f"UIDs: {len(self.uids)}" if self.uids else ""
+        if self.topic_ids:
+            target_desc += (" & " if target_desc else "") + f"Topics: {len(self.topic_ids)}"
 
-            logging.info(f"Sending WXPusher notification to {target_desc}: {title} ({len(content.encode('utf-8'))} bytes)")
-            response = requests.post(url, json=data, timeout=10)
-            result = response.json()
-            if result.get('code') == 1000:
-                logging.info("WXPusher notification sent successfully")
-                return True
-            else:
-                logging.error(f"WXPusher notification failed: {result.get('msg')}")
-                return False
-        except Exception as e:
-            logging.error(f"Error sending WXPusher notification: {e}")
-            return False
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                logging.info(f"Sending WXPusher notification to {target_desc}: {title} ({len(content.encode('utf-8'))} bytes) (attempt {attempt}/{max_retries})")
+                response = requests.post(url, json=data, timeout=30)
+                result = response.json()
+                if result.get('code') == 1000:
+                    logging.info("WXPusher notification sent successfully")
+                    return True
+                else:
+                    logging.error(f"WXPusher notification failed: {result.get('msg')}")
+                    return False
+            except Exception as e:
+                logging.error(f"Error sending WXPusher notification (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    wait = attempt * 5
+                    logging.info(f"Retrying in {wait}s...")
+                    _time.sleep(wait)
+        return False
 
 
 class DingTalkProvider(NotificationProvider):

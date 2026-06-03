@@ -209,11 +209,12 @@ def run_checkin(account_user=None, account_pwd=None):
         dismiss_modal_confirm(driver, timeout)
         dismiss_modal_confirm(driver, timeout)
 
-        checkin_xpath = '//span[contains(text(), "每日签到")]/ancestor::*[contains(@class, "card-header")][1]//span[contains(@class, "badge")]'
-        checkin_xpath_fallback = '//div[contains(@class, "card")]//span[contains(text(), "每日签到")]/../..//span[contains(@class, "badge")]'
+        checkin_xpath = '//div[contains(@class, "card-header")]//span[contains(text(), "每日签到")]/ancestor::div[contains(@class, "card-header")]//*[contains(@class, "badge")]'
+        checkin_xpath_fallback = '//div[contains(@class, "card")]//span[contains(text(), "每日签到")]/../..//*[contains(@class, "badge")]'
+        checkin_xpath_link = '//span[contains(text(), "每日签到")]/..//a[contains(@class, "badge") or contains(text(), "领取奖励")]'
 
         earn = None
-        for xpath in [checkin_xpath, checkin_xpath_fallback]:
+        for xpath in [checkin_xpath, checkin_xpath_fallback, checkin_xpath_link]:
             try:
                 earn = WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.XPATH, xpath))
@@ -224,6 +225,11 @@ def run_checkin(account_user=None, account_pwd=None):
 
         if earn is None:
             logger_adapter.error("无法找到每日签到按钮")
+            try:
+                body_text = driver.find_element(By.TAG_NAME, "body").text[:500]
+                logger_adapter.error(f"页面可见文字（前500字）: {body_text}")
+            except Exception:
+                pass
             screenshot_path = save_screenshot(driver, current_user, status="failure")
             return {
                 'status': False, 'msg': '签到按钮未找到', 'points': 0,
@@ -255,19 +261,21 @@ def run_checkin(account_user=None, account_pwd=None):
             retry_check = 0
             checkin_success = False
             while retry_check < 5 and not checkin_success:
-                try:
-                    earn_verify = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH, checkin_xpath))
-                    )
+                earn_verify = None
+                for v_xpath in [checkin_xpath, checkin_xpath_fallback, checkin_xpath_link]:
+                    try:
+                        earn_verify = WebDriverWait(driver, 3).until(
+                            EC.presence_of_element_located((By.XPATH, v_xpath))
+                        )
+                        break
+                    except TimeoutException:
+                        continue
+                if earn_verify is not None:
                     btn_after = earn_verify.text.strip()
                     if "已完成" in btn_after or "领取奖励" not in btn_after:
                         logger_adapter.info(f"签到验证通过，按钮文字变为: [{btn_after}]")
                         checkin_success = True
                         break
-                except TimeoutException:
-                    logger_adapter.debug("等待签到按钮超时，尝试检查页面文字...")
-                except Exception:
-                    pass
 
                 if not checkin_success:
                     try:
