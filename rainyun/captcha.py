@@ -1233,8 +1233,10 @@ class TwoCaptchaProvider(CaptchaProvider):
 
     API_BASE = "https://2captcha.com"
 
-    def __init__(self):
+    def __init__(self, max_retries=5, global_timeout=300):
         self.api_key = os.getenv("TWOCAPTCHA_API_KEY", "").strip()
+        self.max_retries = int(os.getenv("TWOCAPTCHA_MAX_RETRIES", max_retries))
+        self.global_timeout = int(os.getenv("TWOCAPTCHA_GLOBAL_TIMEOUT", global_timeout))
 
     def solve(self, driver, timeout, retry_stats, logger_adapter):
         modules = import_selenium_modules()
@@ -1246,6 +1248,18 @@ class TwoCaptchaProvider(CaptchaProvider):
 
         if retry_stats is None:
             retry_stats = {'count': 0}
+
+        if self.max_retries >= 0 and retry_stats['count'] >= self.max_retries:
+            logger_adapter.warning(f"2captcha 已达到最大重试次数 {self.max_retries}，放弃")
+            return False
+
+        _start_time = retry_stats.get('_twocaptcha_start_time')
+        if _start_time is None:
+            _start_time = time.time()
+            retry_stats['_twocaptcha_start_time'] = _start_time
+        elif self.global_timeout > 0 and (time.time() - _start_time) > self.global_timeout:
+            logger_adapter.warning(f"2captcha 全局超时 ({time.time() - _start_time:.0f}s)，放弃")
+            return False
 
         try:
             wait = WebDriverWait(driver, min(timeout, 10))
@@ -1269,7 +1283,7 @@ class TwoCaptchaProvider(CaptchaProvider):
             combined = self._build_combined_image(logger_adapter)
             combined_path = "temp/combined_captcha.jpg"
             cv2.imwrite(combined_path, combined)
-            sprite_strip_h = combined.shape[0] - cv2.imread("temp/captcha.jpg").shape[0]
+            captcha_height = cv2.imread("temp/captcha.jpg").shape[0]
 
             click_coords = self._submit_to_2captcha(combined_path, logger_adapter, timeout)
             if not click_coords:
@@ -1280,9 +1294,9 @@ class TwoCaptchaProvider(CaptchaProvider):
 
             captcha_coords = []
             for x, y in click_coords:
-                if y >= sprite_strip_h:
-                    adj_y = y - sprite_strip_h
-                    captcha_coords.append((x, adj_y))
+                # sprite现在在captcha下方，所以y值在captcha高度范围内的是有效坐标
+                if y < captcha_height:
+                    captcha_coords.append((x, y))
                 else:
                     logger_adapter.debug(f"忽略在图案提示区域的点击: ({x}, {y})")
 
@@ -1413,7 +1427,9 @@ class TwoCaptchaProvider(CaptchaProvider):
         x_offset = (captcha.shape[1] - sprite_strip.shape[1]) // 2
         sprite_canvas[:, x_offset:x_offset + sprite_strip.shape[1]] = sprite_strip
 
-        combined = np.vstack([sprite_canvas, line, captcha])
+        # 把sprite放在captcha下方，这样2captcha返回的坐标都在captcha区域内
+        # 不需要过滤坐标，直接使用所有返回的坐标
+        combined = np.vstack([captcha, line, sprite_canvas])
         logger_adapter.debug(f"组合图片尺寸: {combined.shape[1]}x{combined.shape[0]}")
         return combined
 
