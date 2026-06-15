@@ -136,7 +136,7 @@ def generate_html_report(results, screenshot_mode='all'):
                     <span>{res['username']}</span>
                 </div>
                 <span style="background-color: {status_bg}; color: {status_color}; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600;">
-                    {'签到成功' if res['status'] else '签到失败'}
+                    {'今日已签到' if res['status'] and res.get('msg') == '今日已签到' else ('签到成功' if res['status'] else '签到失败')}
                 </span>
             </div>
 
@@ -173,12 +173,13 @@ def generate_markdown_report(results, compact=False):
 
     for res in results:
         status_icon = "✅" if res['status'] else "❌"
+        status_text = "今日已签到" if res['status'] and res.get('msg') == '今日已签到' else ("签到成功" if res['status'] else "签到失败")
 
         if compact and res['status']:
             points_str = f" | {res['points']}积分" if res.get('points') else ""
             md += f"- {status_icon} {res['username']}{points_str}\n"
         else:
-            md += f"### {status_icon} {res['username']}\n"
+            md += f"### {status_icon} {res['username']} ({status_text})\n"
 
             if res.get('points'):
                 points = res['points']
@@ -212,7 +213,9 @@ def generate_summary_report(results, fmt='html'):
         for res in results:
             icon = '✅' if res['status'] else '❌'
             detail = ''
-            if res['status'] and res.get('points'):
+            if res['status'] and res.get('msg') == '今日已签到':
+                detail = f" — 今日已签到"
+            elif res['status'] and res.get('points'):
                 detail = f" — {res['points']}积分"
             elif not res['status']:
                 detail = f" — {res['msg']}"
@@ -234,7 +237,9 @@ def generate_summary_report(results, fmt='html'):
         for res in results:
             icon = '✅' if res['status'] else '❌'
             detail = ''
-            if res['status'] and res.get('points'):
+            if res['status'] and res.get('msg') == '今日已签到':
+                detail = f" — 今日已签到"
+            elif res['status'] and res.get('points'):
                 detail = f" — {res['points']}积分"
             elif not res['status']:
                 detail = f" — {res['msg']}"

@@ -239,6 +239,18 @@ def run_checkin(account_user=None, account_pwd=None):
 
         btn_text = earn.text.strip()
 
+        # 签到前先读取积分
+        points_before = 0
+        try:
+            points_raw_before = driver.find_element(By.XPATH,
+                                                     '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
+                "textContent")
+            import re
+            points_before = int(''.join(re.findall(r'\d+', points_raw_before)))
+            logger_adapter.info(f"签到前积分: {points_before}")
+        except Exception as e:
+            logger_adapter.warning(f"读取签到前积分失败: {e}")
+
         if "领取奖励" in btn_text:
             logger_adapter.info("开始点击领取奖励...")
             earn.click()
@@ -272,7 +284,7 @@ def run_checkin(account_user=None, account_pwd=None):
                         continue
                 if earn_verify is not None:
                     btn_after = earn_verify.text.strip()
-                    if "已完成" in btn_after or "领取奖励" not in btn_after:
+                    if "已完成" in btn_after:
                         logger_adapter.info(f"签到验证通过，按钮文字变为: [{btn_after}]")
                         checkin_success = True
                         break
@@ -310,7 +322,35 @@ def run_checkin(account_user=None, account_pwd=None):
         current_points = int(''.join(re.findall(r'\d+', points_raw)))
         if not os.getenv('CI'):
             logger_adapter.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
-        logger_adapter.info("签到任务执行成功！")
+
+        # 判断是"今日已签到"还是"签到成功"
+        is_already_checked_in = "领取奖励" not in btn_text
+        if is_already_checked_in:
+            logger_adapter.info("今日已签到，无需重复签到")
+            screenshot_path = save_screenshot(driver, current_user, status="success")
+            return {
+                'status': True,
+                'msg': '今日已签到',
+                'points': current_points,
+                'username': masked_user,
+                'retries': retry_stats['count'],
+                'screenshot': screenshot_path
+            }
+
+        # 签到后积分验证
+        if points_before > 0 and current_points <= points_before:
+            logger_adapter.warning(f"签到后积分未增加（签到前: {points_before}, 签到后: {current_points}），签到可能失败")
+            screenshot_path = save_screenshot(driver, current_user, status="failure")
+            return {
+                'status': False,
+                'msg': '签到失败：积分未增加',
+                'points': current_points,
+                'username': masked_user,
+                'retries': retry_stats['count'],
+                'screenshot': screenshot_path
+            }
+
+        logger_adapter.info(f"签到成功，积分从 {points_before} 增加到 {current_points}")
         screenshot_path = save_screenshot(driver, current_user, status="success")
         return {
             'status': True,
@@ -460,7 +500,8 @@ def run_all_accounts():
             time.sleep(retry_wait)
 
     final_results = [results[username]['result'] for username, _ in accounts]
-    success_count = len([r for r in final_results if r and r['status']])
+    success_count = len([r for r in final_results if r and r['status'] and r.get('msg') != '今日已签到'])
+    already_checked_in_count = len([r for r in final_results if r and r['status'] and r.get('msg') == '今日已签到'])
 
     retry_accounts = [(username, results[username]['retry_count']) for username, _ in accounts if results[username]['retry_count'] > 0]
     if retry_accounts:
@@ -533,7 +574,7 @@ def run_all_accounts():
                 byte_size = len(content.encode('utf-8'))
                 logger.info(f"内容版本 {key}: {byte_size} bytes ({byte_size/1024:.1f} KB)")
 
-            title = f"雨云签到: {success_count}/{len(accounts)} 成功"
+            title = f"雨云签到: {success_count}成功 {already_checked_in_count}已签到 {len(accounts)-success_count-already_checked_in_count}失败"
             notification_manager.send_all(title, context)
 
     logger.info("任务完成，执行最终清理...")
