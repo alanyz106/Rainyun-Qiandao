@@ -1501,6 +1501,10 @@ class TwoCaptchaProvider(CaptchaProvider):
 
     @staticmethod
     def _parse_coordinates(coords_str):
+        # 去掉可能的 "coordinates:" 前缀
+        if coords_str.startswith("coordinates:"):
+            coords_str = coords_str[len("coordinates:"):]
+
         coords = []
         for part in coords_str.split(";"):
             part = part.strip()
