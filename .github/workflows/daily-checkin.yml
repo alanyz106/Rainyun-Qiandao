@@ -4,26 +4,18 @@ on:
   # 定时触发 - 每天北京时间 8:15 执行 (UTC 0:15) - 避开 0:00 晚高峰
   schedule:
     - cron: '15 0 * * *'
-    # 每月1日 UTC 0:16 触发月统计（北京时间1日8:16，上月数据已完整）
-    - cron: '16 0 1 * *'
 
   # 手动触发（方便测试）
   workflow_dispatch:
-    inputs:
-      run_monthly_stats:
-        description: '手动触发月统计（不执行签到）'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   checkin:
-    # 月统计手动触发时跳过签到
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.run_monthly_stats }}
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai
-    
+    permissions:
+      contents: write
+
     steps:
       # 1. 检出代码
       - name: 检出代码
@@ -67,9 +59,8 @@ jobs:
           restore-keys: |
             cookies-
 
-      # 7. 执行签到
+      # 7. 执行签到（内部会自动保存 stats/YYYY-MM/DD.json 并在推送中附上月统计）
       - name: 执行签到
-        id: checkin
         env:
           # 从 GitHub Secrets 读取账号密码
           RAINYUN_USERNAME: ${{ secrets.RAINYUN_USERNAME }}
@@ -98,66 +89,22 @@ jobs:
           SCREENSHOT_MODE: ${{ secrets.SCREENSHOT_MODE || 'failed_only' }}
         run: |
           python rainyun.py
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
 
-      # 8. 保存每日签到记录到 stats/ 目录
-      - name: 保存每日签到记录
-        if: always()
-        env:
-          CHECKIN_STATUS: ${{ job.status }}
-        run: |
-          DATE=$(date +%Y-%m-%d)
-          MONTH=$(date +%Y-%m)
-          DAY=$(date +%d)
-          
-          mkdir -p "stats/${MONTH}"
-          
-          # 生成每日签到记录 JSON
-          STATUS="success"
-          if [ "$CHECKIN_STATUS" != "success" ]; then
-            STATUS="failure"
-          fi
-          
-          # 尝试从日志提取积分信息
-          POINTS=""
-          if [ -f "logs/rainyun.log" ]; then
-            POINTS=$(grep -oP '(?<=获得积分：)\d+' logs/rainyun.log 2>/dev/null | tail -1 || echo "")
-          fi
-          
-          cat > "stats/${MONTH}/${DAY}.json" << EOF
-          {
-            "date": "${DATE}",
-            "status": "${STATUS}",
-            "points": "${POINTS}",
-            "run_id": "${{ github.run_id }}",
-            "run_number": "${{ github.run_number }}",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          
-          echo "已保存签到记录: stats/${MONTH}/${DAY}.json"
-          cat "stats/${MONTH}/${DAY}.json"
-
-      # 9. 将签到记录 commit 回仓库
+      # 8. 将签到记录（stats/）commit 回仓库，供后续月统计读取
       - name: 提交签到记录
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
           git add stats/
-          
-          # 有变更才提交
           if git diff --staged --quiet; then
             echo "无签到记录变更，跳过提交"
           else
-            DATE=$(date +%Y-%m-%d)
-            git commit -m "📊 签到记录: ${DATE} [skip ci]"
+            git commit -m "📊 签到记录: $(date +%Y-%m-%d) [skip ci]"
             git push
-            echo "签到记录已提交"
           fi
 
-      # 10. 上传日志（可选，方便排查问题）
+      # 9. 上传日志（可选，方便排查问题）
       - name: 上传日志
         if: always()
         uses: actions/upload-artifact@v4
@@ -165,188 +112,3 @@ jobs:
           name: checkin-logs-${{ github.run_number }}
           path: logs/
           retention-days: 7
-
-  # ─────────────────────────────────────────────
-  # 每月统计 Job（每月1日或手动触发）
-  # ─────────────────────────────────────────────
-  monthly-stats:
-    # 每月1日定时触发，或手动选择月统计时触发
-    if: |
-      (github.event_name == 'schedule' && startsWith(github.event.schedule, '16 0 1')) ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_monthly_stats == true)
-    runs-on: ubuntu-latest
-    env:
-      TZ: Asia/Shanghai
-    permissions:
-      contents: read
-      issues: write
-
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: 生成月度签到统计并创建 Issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 计算上月年份和月份
-          LAST_MONTH=$(date -d "$(date +%Y-%m-01) -1 day" +%Y-%m)
-          LAST_MONTH_CN=$(date -d "$(date +%Y-%m-01) -1 day" +%Y年%-m月)
-          DAYS_IN_MONTH=$(date -d "$(date +%Y-%m-01) -1 day" +%d)
-          YEAR=$(echo $LAST_MONTH | cut -d- -f1)
-          MONTH_NUM=$(echo $LAST_MONTH | cut -d- -f2)
-          
-          echo "统计月份: $LAST_MONTH ($LAST_MONTH_CN, 共 ${DAYS_IN_MONTH} 天)"
-          
-          STATS_DIR="stats/${LAST_MONTH}"
-          SUCCESS_COUNT=0
-          FAILURE_COUNT=0
-          TOTAL_POINTS=0
-          MISSING_DAYS=()
-          FAILURE_DAYS=()
-          SUCCESS_DAYS=()
-          CALENDAR_ROWS=""
-          
-          # 构建日历表格
-          # 计算上月1号是星期几（0=Sunday）
-          FIRST_DOW=$(date -d "${LAST_MONTH}-01" +%w)
-          
-          # 表头
-          CALENDAR_ROWS="| 日 | 一 | 二 | 三 | 四 | 五 | 六 |\n|:---:|:---:|:---:|:---:|:---:|:---:|:---:|\n|"
-          
-          # 填充第一行前的空格
-          COL=0
-          for i in $(seq 1 $FIRST_DOW); do
-            CALENDAR_ROWS="${CALENDAR_ROWS}   |"
-            COL=$((COL + 1))
-          done
-          
-          # 遍历每一天
-          for d in $(seq 1 $DAYS_IN_MONTH); do
-            DAY=$(printf "%02d" $d)
-            JSON_FILE="${STATS_DIR}/${DAY}.json"
-            
-            if [ -f "$JSON_FILE" ]; then
-              STATUS=$(python3 -c "import json,sys; d=json.load(open('$JSON_FILE')); print(d.get('status','unknown'))" 2>/dev/null || echo "unknown")
-              POINTS_VAL=$(python3 -c "import json,sys; d=json.load(open('$JSON_FILE')); print(d.get('points','') or '')" 2>/dev/null || echo "")
-              
-              if [ "$STATUS" = "success" ]; then
-                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                SUCCESS_DAYS+=("$d")
-                CELL="✅${d}"
-                if [ -n "$POINTS_VAL" ] && [ "$POINTS_VAL" != "None" ] && [ "$POINTS_VAL" != "" ]; then
-                  TOTAL_POINTS=$((TOTAL_POINTS + POINTS_VAL))
-                fi
-              else
-                FAILURE_COUNT=$((FAILURE_COUNT + 1))
-                FAILURE_DAYS+=("$d")
-                CELL="❌${d}"
-              fi
-            else
-              MISSING_DAYS+=("$d")
-              CELL="⬜${d}"
-            fi
-            
-            CALENDAR_ROWS="${CALENDAR_ROWS} ${CELL} |"
-            COL=$((COL + 1))
-            
-            # 每7列换行
-            if [ $((COL % 7)) -eq 0 ] && [ $d -lt $DAYS_IN_MONTH ]; then
-              CALENDAR_ROWS="${CALENDAR_ROWS}\n|"
-            fi
-          done
-          
-          # 补全最后一行
-          REMAINING=$((7 - COL % 7))
-          if [ $REMAINING -ne 7 ]; then
-            for i in $(seq 1 $REMAINING); do
-              CALENDAR_ROWS="${CALENDAR_ROWS}   |"
-            done
-          fi
-          
-          # 计算统计数据
-          TOTAL_RECORDED=$((SUCCESS_COUNT + FAILURE_COUNT))
-          MISSING_COUNT=${#MISSING_DAYS[@]}
-          SUCCESS_RATE=0
-          if [ $DAYS_IN_MONTH -gt 0 ]; then
-            SUCCESS_RATE=$(echo "scale=1; $SUCCESS_COUNT * 100 / $DAYS_IN_MONTH" | bc)
-          fi
-          MONEY=$(echo "scale=2; $TOTAL_POINTS / 2000" | bc 2>/dev/null || echo "0")
-          
-          # 构建失败天数列表
-          FAILURE_LIST=""
-          if [ ${#FAILURE_DAYS[@]} -gt 0 ]; then
-            FAILURE_LIST=$(IFS=", "; echo "${FAILURE_DAYS[*]}")
-            FAILURE_LIST="第 ${FAILURE_LIST} 日"
-          else
-            FAILURE_LIST="无"
-          fi
-          
-          # 构建缺失天数说明
-          MISSING_LIST=""
-          if [ ${#MISSING_DAYS[@]} -gt 0 ]; then
-            MISSING_LIST=$(IFS=", "; echo "${MISSING_DAYS[*]}")
-            MISSING_LIST="第 ${MISSING_LIST} 日（无记录，可能因网络问题或未运行）"
-          else
-            MISSING_LIST="无"
-          fi
-          
-          # 状态评级
-          if [ "$SUCCESS_COUNT" -eq "$DAYS_IN_MONTH" ]; then
-            GRADE="🏆 全勤满签！"
-          elif [ $(echo "$SUCCESS_RATE > 90" | bc) -eq 1 ]; then
-            GRADE="🥇 优秀（${SUCCESS_RATE}%）"
-          elif [ $(echo "$SUCCESS_RATE > 70" | bc) -eq 1 ]; then
-            GRADE="🥈 良好（${SUCCESS_RATE}%）"
-          else
-            GRADE="🥉 需改进（${SUCCESS_RATE}%）"
-          fi
-          
-          # 生成 Issue 内容
-          ISSUE_BODY="## 📊 ${LAST_MONTH_CN} 签到月报
-          
-          > 自动生成于 $(date '+%Y-%m-%d %H:%M:%S CST')
-          
-          ### 📈 总览
-          
-          | 项目 | 数值 |
-          |------|------|
-          | 📅 统计月份 | ${LAST_MONTH_CN}（共 ${DAYS_IN_MONTH} 天）|
-          | ✅ 签到成功 | **${SUCCESS_COUNT}** 天 |
-          | ❌ 签到失败 | ${FAILURE_COUNT} 天 |
-          | ⬜ 无记录 | ${MISSING_COUNT} 天 |
-          | 📊 成功率 | **${SUCCESS_RATE}%** |
-          | 🪙 累计获得积分 | ${TOTAL_POINTS} 分（≈ ￥${MONEY}）|
-          | 🏅 综合评级 | ${GRADE} |
-          
-          ### 📅 签到日历
-          
-          $(echo -e "$CALENDAR_ROWS")
-          
-          > ✅ 成功　❌ 失败　⬜ 无记录
-          
-          ### 📋 详情
-          
-          - **失败日期**：${FAILURE_LIST}
-          - **无记录日期**：${MISSING_LIST}
-          
-          ---
-          
-          *由 [Rainyun-Qiandao](https://github.com/${{ github.repository }}) 自动生成*"
-          
-          # 创建 GitHub Issue
-          ISSUE_TITLE="📊 ${LAST_MONTH_CN} 签到月报（成功 ${SUCCESS_COUNT}/${DAYS_IN_MONTH} 天，${SUCCESS_RATE}%）"
-          
-          gh issue create \
-            --title "$ISSUE_TITLE" \
-            --body "$ISSUE_BODY" \
-            --label "月度报告" \
-            --repo "${{ github.repository }}" || \
-          gh issue create \
-            --title "$ISSUE_TITLE" \
-            --body "$ISSUE_BODY" \
-            --repo "${{ github.repository }}"
-          
-          echo "✅ 月报 Issue 已创建：$ISSUE_TITLE"

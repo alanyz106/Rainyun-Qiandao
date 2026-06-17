@@ -12,7 +12,7 @@ from rainyun.browser import generate_fingerprint_script, get_proxy_ip, init_sele
 from rainyun.captcha import get_captcha_provider
 from rainyun.config import import_selenium_modules, now_local, unload_selenium_modules
 from rainyun.config import logger as config_logger
-from rainyun.report import generate_html_report, generate_markdown_report, generate_summary_report, save_screenshot
+from rainyun.report import generate_html_report, generate_markdown_report, generate_summary_report, save_daily_record, save_screenshot
 
 logger = logging.getLogger(__name__)
 
@@ -553,6 +553,9 @@ def run_all_accounts():
 
         if notification_manager.providers:
             logger.info("正在生成详细推送报告...")
+
+            # 先把今日结果写入 stats/，这样月统计能包含今天
+            save_daily_record(final_results)
 
             screenshot_mode = os.getenv("SCREENSHOT_MODE", "failed_only").strip().lower()
             if screenshot_mode not in ('all', 'failed_only', 'none'):

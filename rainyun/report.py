@@ -1,3 +1,5 @@
+import calendar
+import json
 import logging
 import os
 import time
@@ -152,6 +154,15 @@ def generate_html_report(results, screenshot_mode='all'):
         </div>
         """
 
+    # 月统计块
+    monthly_html = generate_monthly_stats_html()
+    if monthly_html:
+        html += f"""
+        <div style="padding: 0 16px 16px 16px; background-color: var(--bg-body);">
+            {monthly_html}
+        </div>
+        """
+
     html += """
         </div>
         <div class="footer">
@@ -193,6 +204,7 @@ def generate_markdown_report(results, compact=False):
 
     md += "---\n"
     md += "Powered by Rainyun-Qiandao"
+    md += generate_monthly_stats_markdown()
     return md
 
 
@@ -391,3 +403,271 @@ def cleanup_old_screenshots(screenshot_dir, days=7):
 
     except Exception as e:
         logger.debug(f"清理旧截图时出错: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# 每日签到记录持久化
+# ─────────────────────────────────────────────────────────────
+
+def save_daily_record(results):
+    """
+    将今日签到结果写入 stats/YYYY-MM/DD.json。
+    results: run_all_accounts 返回的 final_results 列表。
+    """
+    try:
+        today = now_local()
+        month_dir = os.path.join("stats", today.strftime("%Y-%m"))
+        os.makedirs(month_dir, exist_ok=True)
+
+        day_file = os.path.join(month_dir, today.strftime("%d") + ".json")
+
+        success_count = len([r for r in results if r and r.get('status')])
+        total_count = len([r for r in results if r])
+        # 取第一个账号的积分作为代表值（单账号场景）
+        points = next((r.get('points') for r in results if r and r.get('points')), None)
+
+        record = {
+            "date": today.strftime("%Y-%m-%d"),
+            "status": "success" if success_count == total_count and total_count > 0 else "failure",
+            "success_count": success_count,
+            "total_count": total_count,
+            "points": points,
+            "timestamp": today.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+
+        with open(day_file, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"已保存今日签到记录: {day_file}")
+        return day_file
+    except Exception as e:
+        logger.warning(f"保存每日签到记录时出错: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# 本月签到统计
+# ─────────────────────────────────────────────────────────────
+
+def get_monthly_stats():
+    """
+    读取 stats/YYYY-MM/ 目录，统计本月签到情况。
+    返回 dict:
+      {
+        'year': int, 'month': int,
+        'days_in_month': int,    # 本月总天数
+        'today': int,            # 今天是几号
+        'passed_days': int,      # 截止今天已过天数（含今天）
+        'success_days': [int],   # 签到成功的日期列表
+        'failure_days': [int],   # 签到失败的日期列表
+        'missing_days': [int],   # 有记录日期中缺失的（应签未签）
+        'success_count': int,
+        'failure_count': int,
+        'missing_count': int,    # 应签但无记录天数
+        'success_rate': float,   # 成功 / 已过天数
+      }
+    """
+    today = now_local()
+    year, month, day_today = today.year, today.month, today.day
+    days_in_month = calendar.monthrange(year, month)[1]
+
+    month_dir = os.path.join("stats", today.strftime("%Y-%m"))
+
+    success_days = []
+    failure_days = []
+    missing_days = []  # 1..today 中没有记录的天
+
+    for d in range(1, day_today + 1):
+        day_str = f"{d:02d}"
+        json_file = os.path.join(month_dir, f"{day_str}.json")
+        if os.path.exists(json_file):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    rec = json.load(f)
+                if rec.get("status") == "success":
+                    success_days.append(d)
+                else:
+                    failure_days.append(d)
+            except Exception:
+                failure_days.append(d)
+        else:
+            missing_days.append(d)
+
+    passed_days = day_today
+    success_count = len(success_days)
+    failure_count = len(failure_days)
+    missing_count = len(missing_days)
+    success_rate = (success_count / passed_days * 100) if passed_days > 0 else 0.0
+
+    return {
+        "year": year,
+        "month": month,
+        "days_in_month": days_in_month,
+        "today": day_today,
+        "passed_days": passed_days,
+        "success_days": success_days,
+        "failure_days": failure_days,
+        "missing_days": missing_days,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "missing_count": missing_count,
+        "success_rate": success_rate,
+    }
+
+
+def generate_monthly_stats_html():
+    """
+    生成本月签到统计的 HTML 块，嵌入到每日推送报告中。
+    """
+    try:
+        stats = get_monthly_stats()
+    except Exception as e:
+        logger.warning(f"生成月统计时出错: {e}")
+        return ""
+
+    year = stats["year"]
+    month = stats["month"]
+    days_in_month = stats["days_in_month"]
+    today = stats["today"]
+    passed_days = stats["passed_days"]
+    success_count = stats["success_count"]
+    failure_count = stats["failure_count"]
+    missing_count = stats["missing_count"]
+    success_rate = stats["success_rate"]
+    success_days = set(stats["success_days"])
+    failure_days = set(stats["failure_days"])
+    missing_days = set(stats["missing_days"])
+
+    # 评级
+    if success_count == passed_days and passed_days > 0:
+        grade = "🏆 全勤"
+    elif success_rate >= 90:
+        grade = "🥇 优秀"
+    elif success_rate >= 70:
+        grade = "🥈 良好"
+    else:
+        grade = "🥉 需加油"
+
+    # 构建日历格子
+    first_weekday = calendar.monthrange(year, month)[0]  # 0=Mon
+    # 转成周日为第一列的偏移（中国习惯可选；这里用周一为首）
+    cells = []
+    for _ in range(first_weekday):
+        cells.append('<td style="padding:2px 4px;"></td>')
+
+    for d in range(1, days_in_month + 1):
+        if d > today:
+            # 未来
+            style = "color:var(--text-sub,#9ca3af);"
+            label = f"{d}"
+        elif d in success_days:
+            style = "color:#059669;font-weight:600;"
+            label = f"✅{d}"
+        elif d in failure_days:
+            style = "color:#dc2626;font-weight:600;"
+            label = f"❌{d}"
+        else:
+            # missing
+            style = "color:#f59e0b;font-weight:600;"
+            label = f"⚠️{d}"
+
+        if d == today:
+            style += "text-decoration:underline;"
+
+        cells.append(f'<td style="padding:2px 4px;font-size:11px;text-align:center;{style}">{label}</td>')
+
+    # 补全最后一行
+    total_cells = first_weekday + days_in_month
+    remainder = total_cells % 7
+    if remainder != 0:
+        for _ in range(7 - remainder):
+            cells.append('<td style="padding:2px 4px;"></td>')
+
+    # 拆成行
+    rows_html = ""
+    for i in range(0, len(cells), 7):
+        rows_html += "<tr>" + "".join(cells[i:i+7]) + "</tr>"
+
+    week_header = "<tr>" + "".join(
+        f'<th style="padding:2px 4px;font-size:10px;color:var(--text-sub,#6b7280);text-align:center;font-weight:500;">{w}</th>'
+        for w in ["一", "二", "三", "四", "五", "六", "日"]
+    ) + "</tr>"
+
+    # 未签天列表
+    unsigned = sorted(failure_days | missing_days)
+    if unsigned:
+        unsigned_str = "、".join(f"{d}日" for d in unsigned if d <= today)
+    else:
+        unsigned_str = "无，保持全勤！🎉"
+
+    html = f"""
+    <div style="margin-top:16px;border-top:1px solid var(--border,#e5e7eb);padding-top:14px;">
+        <div style="font-size:13px;font-weight:700;color:var(--text-main,#111827);margin-bottom:10px;">
+            📅 {year}年{month}月签到统计
+        </div>
+
+        <!-- 数据概览 -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+            <span style="background:var(--bg-success,#ecfdf5);color:var(--text-success,#059669);
+                         padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;">
+                ✅ 已签 {success_count}/{passed_days} 天
+            </span>
+            <span style="background:{'var(--bg-error,#fef2f2)' if (failure_count+missing_count) > 0 else 'var(--bg-success,#ecfdf5)'};
+                         color:{'var(--text-error,#dc2626)' if (failure_count+missing_count) > 0 else 'var(--text-success,#059669)'};
+                         padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;">
+                {"❌ 未签 " + str(failure_count+missing_count) + " 天" if (failure_count+missing_count) > 0 else "🎉 全勤！"}
+            </span>
+            <span style="background:var(--bg-footer,#f3f4f6);color:var(--text-sub,#6b7280);
+                         padding:3px 10px;border-radius:12px;font-size:12px;">
+                {grade} · {success_rate:.0f}%
+            </span>
+        </div>
+
+        <!-- 签到日历 -->
+        <table style="border-collapse:collapse;width:100%;margin-bottom:10px;">
+            {week_header}
+            {rows_html}
+        </table>
+
+        <!-- 未签天列表 -->
+        <div style="font-size:12px;color:var(--text-sub,#6b7280);">
+            <span style="font-weight:500;">未签日期：</span>{unsigned_str}
+        </div>
+        <div style="font-size:11px;color:var(--text-sub,#9ca3af);margin-top:4px;">
+            ✅成功 ❌失败 ⚠️无记录（可能因网络问题）
+        </div>
+    </div>
+    """
+    return html
+
+
+def generate_monthly_stats_markdown():
+    """
+    生成本月签到统计的 Markdown 文本块，用于钉钉等渠道。
+    """
+    try:
+        stats = get_monthly_stats()
+    except Exception as e:
+        logger.warning(f"生成月统计 Markdown 时出错: {e}")
+        return ""
+
+    year = stats["year"]
+    month = stats["month"]
+    passed_days = stats["passed_days"]
+    success_count = stats["success_count"]
+    failure_count = stats["failure_count"]
+    missing_count = stats["missing_count"]
+    success_rate = stats["success_rate"]
+    failure_days = set(stats["failure_days"])
+    missing_days = set(stats["missing_days"])
+
+    unsigned = sorted(failure_days | missing_days)
+    unsigned_str = "、".join(f"{d}日" for d in unsigned if d <= passed_days) if unsigned else "无，全勤！🎉"
+
+    md = f"\n---\n"
+    md += f"### 📅 {year}年{month}月签到统计\n\n"
+    md += f"- ✅ 已签到：**{success_count}** 天 / 已过 {passed_days} 天\n"
+    md += f"- ❌ 未签到：**{failure_count + missing_count}** 天\n"
+    md += f"- 📊 签到率：**{success_rate:.0f}%**\n"
+    md += f"- 📋 未签日期：{unsigned_str}\n"
+    return md
