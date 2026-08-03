@@ -17,54 +17,6 @@ from rainyun.report import generate_html_report, generate_markdown_report, gener
 logger = logging.getLogger(__name__)
 
 
-def preload_captcha_cdn(driver):
-    """预加载腾讯验证码 CDN，降低 GitHub Actions 等海外环境首次加载超时风险"""
-    preload_js = """
-    (() => {
-        const urls = ['https://turing.captcha.qcloud.com', 'https://turing.captcha.gtimg.com'];
-        urls.forEach(u => {
-            if (!document.querySelector('link[rel="preconnect"][href="' + u + '"]')) {
-                const link = document.createElement('link');
-                link.rel = 'preconnect';
-                link.href = u;
-                document.head.appendChild(link);
-            }
-        });
-        fetch('https://turing.captcha.qcloud.com/TCaptcha.js', {mode: 'no-cors'}).catch(() => {});
-    })()
-    """
-    try:
-        driver.execute_script(preload_js)
-    except Exception:
-        pass
-
-
-def wait_login_captcha(driver, logger_adapter, By, EC, TimeoutException, timeout, max_attempts=3):
-    """等待登录验证码 iframe 出现，超时则重新点击登录按钮并预加载 CDN，最多重试 max_attempts 次"""
-    captcha_iframe_id = 'tcaptcha_iframe_dy'
-    for attempt in range(1, max_attempts + 1):
-        try:
-            captcha_wait = WebDriverWait(driver, max(timeout * 2, 60))
-            captcha_wait.until(EC.visibility_of_element_located((By.ID, captcha_iframe_id)))
-            logger_adapter.warning("触发验证码！")
-            return True
-        except TimeoutException:
-            if attempt < max_attempts:
-                logger_adapter.warning(
-                    f"等待验证码超时（第 {attempt}/{max_attempts} 次），预加载 CDN 并重新触发登录...")
-                preload_captcha_cdn(driver)
-                try:
-                    driver.execute_script(
-                        "document.querySelector('form button[type=submit]') && "
-                        "document.querySelector('form button[type=submit]').click();")
-                    time.sleep(3)
-                except Exception:
-                    pass
-            else:
-                logger_adapter.info("未触发验证码")
-    return False
-
-
 def dismiss_modal_confirm(driver, timeout):
     modules = import_selenium_modules()
     WebDriverWait = modules['WebDriverWait']
@@ -207,8 +159,7 @@ def run_checkin(account_user=None, account_pwd=None):
                 username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
                 password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
                 login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
-                    '//form[contains(@class, "auth-login-form")]//button[@type="submit"]')))
-                preload_captcha_cdn(driver)
+                    '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
                 username.send_keys(current_user)
                 password.send_keys(current_pwd)
                 login_button.click()
@@ -221,12 +172,14 @@ def run_checkin(account_user=None, account_pwd=None):
                     'retries': retry_stats['count'], 'screenshot': screenshot_path
                 }
 
-            captcha_triggered = wait_login_captcha(
-                driver, logger_adapter, By, EC, TimeoutException, timeout)
-            if captcha_triggered:
+            try:
+                login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
+                logger_adapter.warning("触发验证码！")
                 driver.switch_to.frame("tcaptcha_iframe_dy")
                 captcha_provider = get_captcha_provider()
                 captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
+            except TimeoutException:
+                logger_adapter.info("未触发验证码")
 
             time.sleep(5)
             driver.switch_to.default_content()
