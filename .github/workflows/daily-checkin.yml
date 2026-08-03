@@ -87,7 +87,7 @@ jobs:
           DEBUG: 'false'
           MAX_DELAY: '1'
           TIMEOUT: '60000'
-          CHECKIN_MAX_RETRIES: '1'
+          CHECKIN_MAX_RETRIES: '0'
           # 2captcha API Key (可选，配置后使用2captcha破解验证码)
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
           # 截图嵌入策略 (all / failed_only / none)
