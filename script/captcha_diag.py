@@ -57,7 +57,7 @@ def check_state(driver):
     """)
 
 
-def try_login(driver, tag):
+def try_login(driver, tag, click_method="native", wait_after=8):
     try:
         user_el = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.NAME, 'login-field')))
         pwd_el = driver.find_element(By.NAME, 'login-password')
@@ -65,42 +65,59 @@ def try_login(driver, tag):
         pwd_el.send_keys("gh_probe_pass")
         btn = driver.find_element(By.XPATH, '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')
         print(f"[{tag}] login_btn:", btn.text.strip(), "display=", driver.execute_script("return getComputedStyle(arguments[0]).display", btn))
-        driver.execute_script("arguments[0].click();", btn)
-        print(f"[{tag}] clicked")
+        if click_method == "js":
+            driver.execute_script("arguments[0].click();", btn)
+        elif click_method == "js_wait_last":
+            driver.execute_script("arguments[0].click();", btn)
+        else:
+            btn.click()
+        print(f"[{tag}] clicked (method={click_method})")
     except Exception as e:
         print(f"[{tag}] login setup ERROR", repr(e))
         return
+
+    f = None
     for i in range(10):
-        time.sleep(3)
+        time.sleep(wait_after if i == 0 else 3)
         try:
             state = check_state(driver)
             print(f"[{tag}][check {i+1}]", state)
             if '"iframe":true' in state:
-                return
+                # also confirm EC.visibility_of_element_located sees it (like main script)
+                try:
+                    el = WebDriverWait(driver, 5).until(
+                        EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
+                    print(f"[{tag}] EC.visibility_of_element_located => OK size={el.size}")
+                except Exception as e:
+                    print(f"[{tag}] EC visibility check FAILED: {repr(e)}")
+                f = True
+                break
         except Exception as e:
             print(f"[{tag}][check {i+1}] ERROR", repr(e))
+    if not f:
+        print(f"[{tag}] RESULT: iframe NEVER appeared")
 
 
-# ---- Path A: direct login URL ----
-print("\n--- PATH A: direct /auth/login ---")
+# ---- Path A: direct login, NATIVE .click() (=== main script method) ----
+print("\n--- PATH A: /auth/login, native .click() ---")
 da = make_driver()
 try:
     da.get("https://app.rainyun.com/auth/login")
     time.sleep(8)
     print("[A][url]", da.current_url)
     print("[A][title]", da.title)
-    try_login(da, "A")
+    try_login(da, "A", click_method="native")
 finally:
     da.quit()
 
-# ---- Path B: go to earn (points) page first, redirect to login ----
-print("\n--- PATH B: earn page -> redirect login ---")
+# ---- Path B: earn page -> redirect login, JS click ----
+print("\n--- PATH B: earn -> redirect login, JS click() ---")
 db = make_driver()
 try:
     db.get("https://app.rainyun.com/account/reward/earn")
     time.sleep(8)
     print("[B][url]", db.current_url)
     print("[B][title]", db.title)
-    try_login(db, "B")
+    try_login(db, "B", click_method="js")
 finally:
     db.quit()
