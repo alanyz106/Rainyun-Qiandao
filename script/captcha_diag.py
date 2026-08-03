@@ -1,6 +1,8 @@
 import sys, os, time, json
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+os.chdir(ROOT)
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
