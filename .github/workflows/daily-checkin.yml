@@ -109,11 +109,14 @@ jobs:
             git push
           fi
 
-      # 9. 上传日志（可选，方便排查问题）
-      - name: 上传日志
+      # 9. 上传日志与截图（方便排查问题）
+      - name: 上传日志与截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: checkin-logs-${{ github.run_number }}
-          path: logs/
+          path: |
+            logs/
+            temp/screenshots/
+          if-no-files-found: ignore
           retention-days: 7

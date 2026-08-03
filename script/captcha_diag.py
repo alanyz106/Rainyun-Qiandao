@@ -13,6 +13,10 @@ from selenium.webdriver.support import expected_conditions as EC
 
 print("=== GH captcha diagnostic A/B ===")
 
+SHOT_DIR = os.path.abspath(os.path.join(ROOT, "temp", "screenshots"))
+os.makedirs(SHOT_DIR, exist_ok=True)
+print("screenshot dir:", SHOT_DIR)
+
 def make_driver():
     ops = Options()
     ops.add_argument("--no-sandbox")
@@ -103,6 +107,11 @@ def try_login(driver, tag, click_method="native", wait_after=8):
                 time.sleep(1)
                 driver.switch_to.frame('tcaptcha_iframe_dy')
                 try:
+                    try:
+                        driver.save_screenshot(os.path.join(SHOT_DIR, f"diag_{tag}_frame.png"))
+                        print(f"[{tag}] saved iframe screenshot diag_{tag}_frame.png")
+                    except Exception as e:
+                        print(f"[{tag}] frame screenshot ERROR: {repr(e)}")
                     # slideBg presence / visibility
                     try:
                         sb = driver.find_element(By.XPATH, '//*[@id="slideBg"]')
@@ -131,6 +140,11 @@ def try_login(driver, tag, click_method="native", wait_after=8):
                 except Exception as e:
                     print(f"[{tag}] frame probe ERROR: {repr(e)}")
                 driver.switch_to.default_content()
+                try:
+                    driver.save_screenshot(os.path.join(SHOT_DIR, f"diag_{tag}_fullpage.png"))
+                    print(f"[{tag}] saved fullpage screenshot diag_{tag}_fullpage.png")
+                except Exception as e:
+                    print(f"[{tag}] fullpage screenshot ERROR: {repr(e)}")
                 f = True
                 break
         except Exception as e:
