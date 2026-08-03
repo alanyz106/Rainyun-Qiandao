@@ -41,6 +41,8 @@ def preload_captcha_cdn(driver):
 
 def wait_login_captcha(driver, logger_adapter, By, EC, TimeoutException, timeout, max_attempts=3):
     """等待登录验证码 iframe 出现，超时则重新点击登录按钮并预加载 CDN，最多重试 max_attempts 次"""
+    modules = import_selenium_modules()
+    WebDriverWait = modules['WebDriverWait']
     captcha_iframe_id = 'tcaptcha_iframe_dy'
     for attempt in range(1, max_attempts + 1):
         try:
