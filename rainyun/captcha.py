@@ -1378,20 +1378,59 @@ class TwoCaptchaProvider(CaptchaProvider):
         except Exception:
             current_ua = None
 
-        slideBg = wait.until(EC.visibility_of_element_located(
-            (By.XPATH, '//*[@id="slideBg"]')))
-        img1_style = slideBg.get_attribute("style")
+        url_ok = True
+        try:
+            slideBg = wait.until(EC.visibility_of_element_located(
+                (By.XPATH, '//*[@id="slideBg"]')))
+            img1_style = slideBg.get_attribute("style")
 
-        import re
-        img1_url = re.search(r'url\(["\']?(.*?)["\']?\)', img1_style).group(1)
-        logger_adapter.info("开始下载验证码图片(1): " + img1_url)
-        download_image(img1_url, "captcha.jpg", user_agent=current_ua)
+            import re
+            img1_url = re.search(r'url\(["\']?(.*?)["\']?\)', img1_style).group(1)
+            logger_adapter.info("开始下载验证码图片(1): " + img1_url)
+            download_image(img1_url, "captcha.jpg", user_agent=current_ua)
 
-        sprite = wait.until(EC.visibility_of_element_located(
-            (By.XPATH, '//*[@id="instruction"]/div/img')))
-        img2_url = sprite.get_attribute("src")
-        logger_adapter.info("开始下载验证码图片(2): " + img2_url)
-        download_image(img2_url, "sprite.jpg", user_agent=current_ua)
+            sprite = wait.until(EC.visibility_of_element_located(
+                (By.XPATH, '//*[@id="instruction"]/div/img')))
+            img2_url = sprite.get_attribute("src")
+            logger_adapter.info("开始下载验证码图片(2): " + img2_url)
+            download_image(img2_url, "sprite.jpg", user_agent=current_ua)
+        except Exception as e:
+            logger_adapter.warning(f"URL 下载验证码图片失败(改用元素截图兜底): {e}")
+            url_ok = False
+
+        # 兜底：URL 下载结果无效(文件过小/缺失)或解析失败时，直接用元素截图获取像素图
+        if not url_ok or not self._img_file_valid("temp/captcha.jpg") or not self._img_file_valid("temp/sprite.jpg"):
+            logger_adapter.info("验证码图片不可用，使用元素截图兜底")
+            self._screenshot_captcha_elements(driver, logger_adapter)
+
+    @staticmethod
+    def _img_file_valid(path, min_size=1000):
+        try:
+            return os.path.isfile(path) and os.path.getsize(path) >= min_size
+        except Exception:
+            return False
+
+    def _screenshot_captcha_elements(self, driver, logger_adapter):
+        modules = import_selenium_modules()
+        WebDriverWait = modules['WebDriverWait']
+        EC = modules['EC']
+        By = modules['By']
+
+        try:
+            slide_bg = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, '//*[@id="slideBg"]')))
+            slide_bg.screenshot("temp/captcha.jpg")
+            logger_adapter.info("元素截图: slideBg -> temp/captcha.jpg")
+        except Exception as e:
+            logger_adapter.warning(f"slideBg 截图失败: {e}")
+
+        try:
+            sprite = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, '//*[@id="instruction"]/div/img')))
+            sprite.screenshot("temp/sprite.jpg")
+            logger_adapter.info("元素截图: instruction img -> temp/sprite.jpg")
+        except Exception as e:
+            logger_adapter.warning(f"instruction img 截图失败: {e}")
 
     @staticmethod
     def _build_combined_image(logger_adapter):

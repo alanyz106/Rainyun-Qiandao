@@ -162,6 +162,16 @@ def run_checkin(account_user=None, account_pwd=None):
                     '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
                 username.send_keys(current_user)
                 password.send_keys(current_pwd)
+
+                # 关键：取消勾选 "7天免登录"（默认勾选会触发简化验证流程，导致验证码点选图片不下发）
+                try:
+                    remember_me = driver.find_element(By.ID, 'remember-me')
+                    if remember_me.is_selected():
+                        driver.execute_script("arguments[0].click();", remember_me)
+                        logger_adapter.info("已取消勾选'7天免登录'，确保验证码图片正常下发")
+                except Exception as e:
+                    logger_adapter.debug(f"取消免登录勾选失败(忽略): {e}")
+
                 login_button.click()
             except TimeoutException:
                 logger_adapter.error("页面加载超时")
