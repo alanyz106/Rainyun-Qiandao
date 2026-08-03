@@ -108,12 +108,24 @@ def try_login(driver, tag, click_method="native", wait_after=8):
                         sb = driver.find_element(By.XPATH, '//*[@id="slideBg"]')
                         print(f"[{tag}] slideBg exists: displayed={sb.is_displayed()} size={sb.size} loc={sb.location}")
                         try:
-                            st = driver.execute_script("return JSON.stringify({top: document.getElementById('slideBg').getBoundingClientRect().top, v: getComputedStyle(document.getElementById('slideBg')).visibility, d: getComputedStyle(document.getElementById('slideBg')).display})")
+                            st = driver.execute_script("return JSON.stringify({top: document.getElementById('slideBg').getBoundingClientRect().top, v: getComputedStyle(document.getElementById('slideBg')).visibility, d: getComputedStyle(document.getElementById('slideBg')).display, w: document.getElementById('slideBg').offsetWidth, h: document.getElementById('slideBg').offsetHeight, bg: (getComputedStyle(document.getElementById('slideBg')).backgroundImage||'').slice(0,60)})")
                             print(f"[{tag}] slideBg state:", st)
                         except Exception as e:
                             print(f"[{tag}] slideBg js state ERROR:", repr(e))
                     except Exception as e:
                         print(f"[{tag}] slideBg find ERROR: {repr(e)}")
+                    # long poll: does slideBg ever grow height?
+                    for pi in range(10):
+                        time.sleep(3)
+                        try:
+                            poll = driver.execute_script("var e=document.getElementById('slideBg'); return JSON.stringify({h:e?e.offsetHeight:null, img: e?e.offsetWidth:null, ready: document.readyState})")
+                            print(f"[{tag}][poll {pi+1}]", poll)
+                            hh = driver.execute_script("var e=document.getElementById('slideBg'); return e?e.offsetHeight:0")
+                            if hh > 0:
+                                print(f"[{tag}] slideBg height grown to {hh}")
+                                break
+                        except Exception as e:
+                            print(f"[{tag}][poll {pi+1}] ERROR:", repr(e))
                     body = driver.execute_script("return document.body?document.body.innerText.slice(0,200):'no-body'")
                     print(f"[{tag}] frame body: {body[:200]}")
                 except Exception as e:
