@@ -83,30 +83,42 @@ def try_login(driver, tag, click_method="native", wait_after=8):
             state = check_state(driver)
             print(f"[{tag}][check {i+1}]", state)
             if '"iframe":true' in state:
-                # Selenium-native checks
+                print(f"[{tag}] === probing inside iframe ===")
+                # JS: force iframe back into viewport
+                moved = driver.execute_script("""
+                  var f = document.getElementById('tcaptcha_iframe_dy');
+                  var before = f ? f.getBoundingClientRect().y : null;
+                  if (f) {
+                    f.style.position = 'fixed';
+                    f.style.top = '80px';
+                    f.style.left = '50%';
+                    f.style.margin = '0';
+                    f.style.transform = 'translateX(-50%)';
+                    f.style.zIndex = '2147483647';
+                  }
+                  var after = f ? f.getBoundingClientRect().y : null;
+                  return JSON.stringify({before: before, after: after, styleTop: f?f.style.top:null});
+                """)
+                print(f"[{tag}] move iframe into view:", moved)
+                time.sleep(1)
+                driver.switch_to.frame('tcaptcha_iframe_dy')
                 try:
-                    el = driver.find_element(By.ID, 'tcaptcha_iframe_dy')
-                    print(f"[{tag}] selenium is_displayed={el.is_displayed()} size={el.size} loc={el.location}")
-                except Exception as e:
-                    print(f"[{tag}] selenium find ERROR: {repr(e)}")
-                try:
-                    el2 = WebDriverWait(driver, 5).until(
-                        EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
-                    print(f"[{tag}] EC.visibility_of_element_located => OK size={el2.size}")
-                except Exception as e:
-                    print(f"[{tag}] EC visibility check FAILED: {repr(e)}")
-                # try switching into iframe and probing
-                try:
-                    driver.switch_to.frame('tcaptcha_iframe_dy')
-                    print(f"[{tag}] switch_to.frame OK, url={driver.current_url[:80]}")
+                    # slideBg presence / visibility
                     try:
-                        body = driver.execute_script("return document.body?document.body.innerText.slice(0,120):'no-body'")
-                        print(f"[{tag}] frame body: {body[:120]}")
+                        sb = driver.find_element(By.XPATH, '//*[@id="slideBg"]')
+                        print(f"[{tag}] slideBg exists: displayed={sb.is_displayed()} size={sb.size} loc={sb.location}")
+                        try:
+                            st = driver.execute_script("return JSON.stringify({top: document.getElementById('slideBg').getBoundingClientRect().top, v: getComputedStyle(document.getElementById('slideBg')).visibility, d: getComputedStyle(document.getElementById('slideBg')).display})")
+                            print(f"[{tag}] slideBg state:", st)
+                        except Exception as e:
+                            print(f"[{tag}] slideBg js state ERROR:", repr(e))
                     except Exception as e:
-                        print(f"[{tag}] frame body ERROR: {repr(e)}")
-                    driver.switch_to.default_content()
+                        print(f"[{tag}] slideBg find ERROR: {repr(e)}")
+                    body = driver.execute_script("return document.body?document.body.innerText.slice(0,200):'no-body'")
+                    print(f"[{tag}] frame body: {body[:200]}")
                 except Exception as e:
-                    print(f"[{tag}] switch_to.frame FAILED: {repr(e)}")
+                    print(f"[{tag}] frame probe ERROR: {repr(e)}")
+                driver.switch_to.default_content()
                 f = True
                 break
         except Exception as e:
