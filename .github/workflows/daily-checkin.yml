@@ -50,6 +50,14 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 5.5 网络诊断（临时排查：测试腾讯验证码相关域名连通性）
+      - name: 网络诊断
+        run: |
+          for u in "https://turing.captcha.qcloud.com/TCaptcha.js" "https://turing.captcha.gtimg.com/1/template/drag_ele.html" "https://app.rainyun.com/auth/login" "https://po0.app.rainyun.com/"; do
+            echo "=== $u ==="
+            curl -sS -o /dev/null -w "HTTP %{http_code} connect=%{time_connect}s total=%{time_total}s\n" --max-time 20 "$u" || echo "FAILED: $?"
+          done
+
       # 6. 缓存 Cookie (避免每日重复登录)
       - name: 缓存 Cookie
         uses: actions/cache@v4
