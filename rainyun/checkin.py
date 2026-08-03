@@ -173,8 +173,23 @@ def run_checkin(account_user=None, account_pwd=None):
                 }
 
             try:
-                login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
+                login_captcha = wait.until(EC.presence_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
                 logger_adapter.warning("触发验证码！")
+                try:
+                    driver.execute_script("""
+                      var f = document.getElementById('tcaptcha_iframe_dy');
+                      if (f) {
+                        f.style.position = 'fixed';
+                        f.style.top = '80px';
+                        f.style.left = '50%';
+                        f.style.margin = '0';
+                        f.style.transform = 'translateX(-50%)';
+                        f.style.zIndex = '2147483647';
+                      }
+                    """)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
                 driver.switch_to.frame("tcaptcha_iframe_dy")
                 captcha_provider = get_captcha_provider()
                 captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
