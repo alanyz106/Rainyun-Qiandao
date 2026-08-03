@@ -46,9 +46,14 @@ def make_driver():
 def check_state(driver):
     return driver.execute_script("""
       var f = document.getElementById('tcaptcha_iframe_dy');
-      var turing = document.querySelectorAll('script[src*="turing"], script[src*="captcha"]').length;
-      var turingRes = performance.getEntriesByType('resource').filter(e=>e.name.includes('turing')||e.name.includes('TCaptcha')||e.name.includes('captcha.gtimg')).map(e=>e.name);
-      return JSON.stringify({iframe: !!f, iframeSrc: f?f.src.substring(0,80):null, turingScripts: turing, resources: turingRes});
+      var v = null, d = null, size = null, rect = null;
+      if (f) {
+        v = window.getComputedStyle(f).visibility;
+        d = window.getComputedStyle(f).display;
+        size = {w: f.offsetWidth, h: f.offsetHeight};
+        rect = f.getBoundingClientRect ? {w: f.getBoundingClientRect().width, h: f.getBoundingClientRect().height} : null;
+      }
+      return JSON.stringify({iframe: !!f, visibility: v, display: d, offsetSize: size, rectSize: rect, scrollW: window.innerWidth, scrollH: window.innerHeight});
     """)
 
 
