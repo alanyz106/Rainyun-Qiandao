@@ -680,7 +680,7 @@ def run_all_accounts():
     from rainyun.config import cleanup_zombie_processes
     cleanup_zombie_processes()
 
-    return success_count > 0
+    return success_count > 0 or already_checked_in_count > 0
 
 
 def scheduled_checkin():

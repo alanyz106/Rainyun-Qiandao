@@ -111,4 +111,4 @@ if __name__ == "__main__":
         if success:
             logger.info("程序执行完成")
         else:
-            logger.error("程序执行失败")
+            logger.error("签到任务失败：所有账号均未成功")
