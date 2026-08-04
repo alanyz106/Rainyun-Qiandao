@@ -223,6 +223,24 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
                     logger_adapter.debug(f"取消免登录勾选失败(忽略): {e}")
 
                 login_button.click()
+
+                # 登录页验证码为"软拦截"：账号密码正确时，即使不破解，
+                # 腾讯验证码超时后也会自动放行、表单提交成功并跳转。
+                # 在 GH headless 下 #slideBg 不可见，强行破解会让本地 OCR 白等 max(timeout,60)s 超时，
+                # 因此这里不再破解登录页验证码，点登录后直接轮询等待跳转到登录成功态。
+                logger_adapter.info("已点击登录，等待验证码软放行与页面跳转...")
+                logged_in = False
+                login_wait_end = time.time() + min(timeout, 30)
+                while time.time() < login_wait_end:
+                    try:
+                        current = driver.current_url
+                        if "/dashboard" in current or "/account" in current:
+                            logged_in = True
+                            break
+                    except Exception:
+                        pass
+                    dismiss_modal_confirm(driver, 5)
+                    time.sleep(2)
             except TimeoutException:
                 logger_adapter.error("页面加载超时")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
@@ -233,31 +251,7 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
                     'proxy': proxy, 'proxy_failed': proxy_failed
                 }
 
-            try:
-                login_captcha = wait.until(EC.presence_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
-                logger_adapter.warning("触发验证码！")
-                try:
-                    driver.execute_script("""
-                      var f = document.getElementById('tcaptcha_iframe_dy');
-                      if (f) {
-                        f.style.position = 'fixed';
-                        f.style.top = '80px';
-                        f.style.left = '50%';
-                        f.style.margin = '0';
-                        f.style.transform = 'translateX(-50%)';
-                        f.style.zIndex = '2147483647';
-                      }
-                    """)
-                    time.sleep(0.5)
-                except Exception:
-                    pass
-                driver.switch_to.frame("tcaptcha_iframe_dy")
-                captcha_provider = get_captcha_provider()
-                captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
-            except TimeoutException:
-                logger_adapter.info("未触发验证码")
-
-            time.sleep(5)
+            time.sleep(2)
             driver.switch_to.default_content()
             dismiss_modal_confirm(driver, timeout)
 
