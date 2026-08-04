@@ -9,6 +9,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
+# GitHub Actions 环境检测（Actions 海外 IP 会被雨云拒绝连接，需自动走国内代理）
+_IN_ACTIONS = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 # 运行态配置（由入口点在 main 中设置）
@@ -150,7 +153,7 @@ def import_selenium_modules():
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.wait import WebDriverWait
-        from selenium.common import TimeoutException
+        from selenium.common import TimeoutException, WebDriverException
 
         selenium_modules = {
             'webdriver': webdriver,
@@ -161,7 +164,8 @@ def import_selenium_modules():
             'By': By,
             'EC': EC,
             'WebDriverWait': WebDriverWait,
-            'TimeoutException': TimeoutException
+            'TimeoutException': TimeoutException,
+            'WebDriverException': WebDriverException
         }
     return selenium_modules
 

@@ -324,7 +324,16 @@ def parse_proxy_response(response_text):
     return None
 
 
-def validate_proxy(proxy, timeout=10):
+def validate_proxy(proxy, timeout=5, max_response_time=3):
+    """
+    测试代理是否可用且响应足够快。
+    仅能连通不够——浏览器会话需要加载多个资源，慢代理会导致页面加载不完整、
+    Cookie 无法正确送达服务器，进而被误判为"Cookie 失效"。
+    :param proxy: 代理地址，格式为 ip:port
+    :param timeout: 请求超时时间（秒）
+    :param max_response_time: 最大允许响应时间（秒），超过则认为代理过慢
+    :return: True 可用，False 不可用
+    """
     import requests
 
     if not proxy:
@@ -336,15 +345,21 @@ def validate_proxy(proxy, timeout=10):
             "https": f"http://{proxy}"
         }
 
+        # 使用 app.rainyun.com 测试代理连通性（这是实际被海外 IP 拦截的目标域名）
         logger.info(f"正在验证代理 {proxy} 的可用性...")
+        start_time = time.time()
         response = requests.get(
-            "https://www.rainyun.com",
+            "https://app.rainyun.com/",
             proxies=test_proxies,
             timeout=timeout
         )
+        elapsed = time.time() - start_time
 
         if response.status_code == 200:
-            logger.info(f"代理 {proxy} 验证成功")
+            if elapsed > max_response_time:
+                logger.warning(f"代理 {proxy} 响应过慢（{elapsed:.1f}s > {max_response_time}s），放弃使用")
+                return False
+            logger.info(f"代理 {proxy} 验证成功（响应时间 {elapsed:.1f}s）")
             return True
         else:
             logger.warning(f"代理验证失败，状态码: {response.status_code}")
@@ -356,3 +371,99 @@ def validate_proxy(proxy, timeout=10):
     except Exception as e:
         logger.warning(f"代理 {proxy} 验证失败: {e}")
         return False
+
+
+def check_rainyun_blocked(timeout=8):
+    """
+    检测当前网络环境是否被雨云拦截（海外 IP 无法访问 app.rainyun.com）。
+    直连请求 app.rainyun.com，连接失败或超时则认为被拦截。
+    :param timeout: 请求超时时间（秒）
+    :return: True 表示被拦截（需要代理），False 表示可直连
+    """
+    import requests
+    try:
+        resp = requests.get("https://app.rainyun.com/", timeout=timeout, allow_redirects=False)
+        if resp.status_code in (200, 301, 302):
+            return False
+        logger.warning(f"直连 app.rainyun.com 返回异常状态码 {resp.status_code}，疑似被拦截")
+        return True
+    except requests.Timeout:
+        logger.warning("直连 app.rainyun.com 超时，疑似海外 IP 被拦截")
+        return True
+    except Exception as e:
+        logger.warning(f"直连 app.rainyun.com 失败: {e}，疑似海外 IP 被拦截")
+        return True
+
+
+def get_freeproxy_ip():
+    """
+    使用改进版 freeproxy 抓取国内免费代理，以 app.rainyun.com 为探针并发验证，
+    找到可用代理即停止。仅用于 Actions 海外环境绕过 IP 拦截。
+    :return: 代理地址字符串 "ip:port"，无可用代理时返回 None
+    """
+    try:
+        from freeproxy.freeproxy import ProxiedSessionClient
+    except ImportError:
+        logger.error("未安装代理库 freeproxy，请运行 pip install -r requirements.txt")
+        return None
+
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
+    # 代理源：仅用免浏览器抓取的国内源
+    proxy_sources = [
+        "KuaidailiProxiedSession", "QiyunipProxiedSession", "KxdailiProxiedSession",
+        "IP89ProxiedSession", "TheSpeedXProxiedSession", "ProxyScrapeProxiedSession",
+    ]
+
+    logger.info("正在抓取国内免费代理（以 app.rainyun.com 为探针，找到即停）...")
+
+    try:
+        client = ProxiedSessionClient(
+            proxy_sources=proxy_sources,
+            init_proxied_session_cfg={
+                "max_pages": 2,
+                "filter_rule": {"country_code": ["CN"], "protocol": ["http", "https"]},
+            },
+            disable_print=True,
+            lazy=True,  # 不在构造阶段抓取，交给 fetch_working_streaming 边抓边验、命中即停
+        )
+
+        def _is_valid(resp):
+            # 能拿到 200 响应且响应够快，才证明代理可用于浏览器会话。
+            # 慢代理（>3s）会导致页面加载不完整、Cookie 无法送达，被误判为"Cookie 失效"。
+            try:
+                if resp.status_code != 200:
+                    return False
+                if resp.elapsed.total_seconds() > 3:
+                    return False
+                return True
+            except Exception:
+                return False
+
+        working = client.fetch_working_streaming(
+            test_url="https://app.rainyun.com/",
+            need=1,
+            source_timeout=15,
+            validate_timeout=5,
+            validate_workers=64,
+            method="GET",
+            is_valid=_is_valid,
+        )
+    except Exception as e:
+        logger.error(f"抓取国内代理失败: {e}")
+        return None
+
+    if not working:
+        logger.warning("未找到可用的国内代理")
+        return None
+
+    # fetch_working_streaming 返回 requests 格式字典，提取 ip:port 供 Selenium 使用
+    proxy_dict = working[0]
+    proxy_url = proxy_dict.get("http") or proxy_dict.get("https") or ""
+    proxy_str = proxy_url.replace("http://", "").replace("https://", "").strip("/")
+    logger.info(f"获取到可用国内代理 {proxy_str}")
+    return proxy_str if proxy_str else None

@@ -8,9 +8,16 @@ import schedule
 
 from rainyun import config as rconfig
 from rainyun.account import load_cookies, parse_accounts, save_cookies
-from rainyun.browser import generate_fingerprint_script, get_proxy_ip, init_selenium, validate_proxy
+from rainyun.browser import (
+    check_rainyun_blocked,
+    generate_fingerprint_script,
+    get_freeproxy_ip,
+    get_proxy_ip,
+    init_selenium,
+    validate_proxy,
+)
 from rainyun.captcha import get_captcha_provider
-from rainyun.config import import_selenium_modules, now_local, unload_selenium_modules
+from rainyun.config import _IN_ACTIONS, import_selenium_modules, now_local, unload_selenium_modules
 from rainyun.config import logger as config_logger
 from rainyun.report import generate_html_report, generate_markdown_report, generate_summary_report, save_daily_record, save_screenshot
 
@@ -87,7 +94,7 @@ def wait_captcha_or_modal(driver, timeout):
     return "none"
 
 
-def run_checkin(account_user=None, account_pwd=None):
+def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
     """执行单个账号的签到任务"""
     modules = import_selenium_modules()
     webdriver = modules['webdriver']
@@ -96,6 +103,7 @@ def run_checkin(account_user=None, account_pwd=None):
     EC = modules['EC']
     WebDriverWait = modules['WebDriverWait']
     TimeoutException = modules['TimeoutException']
+    WebDriverException = modules['WebDriverException']
     import subprocess
 
     current_user = account_user or rconfig.user
@@ -111,14 +119,18 @@ def run_checkin(account_user=None, account_pwd=None):
 
     logger_adapter = PrefixAdapter(logger, {'prefix': masked_user})
 
+    proxy = None
+    proxy_failed = False
     try:
         logger_adapter.info(f"开始执行签到任务...")
 
-        proxy = None
+        # 获取代理IP（每个账号单独获取）
         proxy_api_url = os.getenv("PROXY_API_URL", "").strip()
         if proxy_api_url:
+            # 优先使用配置的代理接口（付费/自建）
             proxy = get_proxy_ip()
             if proxy:
+                # 验证代理可用性
                 if validate_proxy(proxy):
                     logger_adapter.info(f"代理 {proxy} 验证通过，将使用此代理")
                 else:
@@ -126,6 +138,24 @@ def run_checkin(account_user=None, account_pwd=None):
                     proxy = None
             else:
                 logger_adapter.warning("获取代理失败，将使用本地IP继续")
+        elif _IN_ACTIONS or check_rainyun_blocked():
+            # 海外 IP 会被雨云拒绝连接（浏览器显示 This site can't be reached），
+            # 自动抓取国内免费代理绕过拦截，覆盖 GitHub Actions、海外 VPS、Docker 等环境。
+            # 重试时优先复用上次的代理：换 IP 会导致服务器 Cookie 失效，
+            # 进而被迫走密码登录，而慢代理下密码登录容易超时失败。
+            if reuse_proxy:
+                if validate_proxy(reuse_proxy):
+                    proxy = reuse_proxy
+                    logger_adapter.info(f"复用上次代理: {proxy}（避免换 IP 导致 Cookie 失效）")
+                else:
+                    logger_adapter.warning(f"上次代理 {reuse_proxy} 已失效，重新抓取国内代理")
+                    proxy = get_freeproxy_ip()
+            else:
+                proxy = get_freeproxy_ip()
+            if proxy:
+                logger_adapter.info(f"国内代理 {proxy} 已就绪，用于绕过海外 IP 拦截")
+            else:
+                logger_adapter.warning("未获取到可用国内代理，直连可能被拒绝连接")
 
         logger_adapter.info("初始化 Selenium（账号专属配置）")
         driver = init_selenium(current_user, proxy=proxy)
@@ -147,10 +177,30 @@ def run_checkin(account_user=None, account_pwd=None):
         timeout = rconfig.timeout
         wait = WebDriverWait(driver, timeout)
 
-        load_cookies(driver, current_user)
-        logger_adapter.info("正在跳转积分页...")
-        driver.get("https://app.rainyun.com/account/reward/earn")
-        time.sleep(3)
+        # 加载 Cookie 并直接跳转积分页
+        # 慢代理或断连会导致 driver.get() 抛 WebDriverException（ERR_PROXY_CONNECTION_FAILED 等），
+        # 需要捕获并标记为代理失败，让重试机制换新代理而非复用旧代理。
+        proxy_failed = False
+        try:
+            load_cookies(driver, current_user)
+            logger_adapter.info("正在跳转积分页...")
+            driver.get("https://app.rainyun.com/account/reward/earn")
+            time.sleep(3)
+        except WebDriverException as e:
+            error_msg = str(e)
+            if any(kw in error_msg for kw in (
+                "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
+                "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer"
+            )):
+                logger_adapter.error(f"代理连接失败，页面无法加载: {error_msg[:200]}")
+                screenshot_path = save_screenshot(driver, current_user, status="failure")
+                return {
+                    'status': False, 'msg': '代理连接失败，页面无法加载', 'points': 0,
+                    'username': masked_user,
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': True
+                }
+            raise
 
         if "/auth/login" in driver.current_url:
             logger_adapter.info("Cookie 已失效，使用账号密码登录")
@@ -179,7 +229,8 @@ def run_checkin(account_user=None, account_pwd=None):
                 return {
                     'status': False, 'msg': '页面加载超时', 'points': 0,
                     'username': masked_user,
-                    'retries': retry_stats['count'], 'screenshot': screenshot_path
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': proxy_failed
                 }
 
             try:
@@ -221,7 +272,8 @@ def run_checkin(account_user=None, account_pwd=None):
                 return {
                     'status': False, 'msg': '登录失败', 'points': 0,
                     'username': masked_user,
-                    'retries': retry_stats['count'], 'screenshot': screenshot_path
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': proxy_failed
                 }
         else:
             logger_adapter.info("Cookie 有效，免密登录成功！🎉")
@@ -259,7 +311,8 @@ def run_checkin(account_user=None, account_pwd=None):
             return {
                 'status': False, 'msg': '签到按钮未找到', 'points': 0,
                 'username': masked_user,
-                'retries': retry_stats['count'], 'screenshot': screenshot_path
+                'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                'proxy': proxy, 'proxy_failed': proxy_failed
             }
 
         btn_text = earn.text.strip()
@@ -335,7 +388,8 @@ def run_checkin(account_user=None, account_pwd=None):
                 return {
                     'status': False, 'msg': '签到失败：验证码未正确处理或签到未生效', 'points': 0,
                     'username': masked_user,
-                    'retries': retry_stats['count'], 'screenshot': screenshot_path
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': proxy_failed
                 }
         else:
             logger_adapter.info(f"今日已签到（按钮显示: {btn_text}）")
@@ -359,7 +413,8 @@ def run_checkin(account_user=None, account_pwd=None):
                 'points': current_points,
                 'username': masked_user,
                 'retries': retry_stats['count'],
-                'screenshot': screenshot_path
+                'screenshot': screenshot_path,
+                'proxy': proxy, 'proxy_failed': proxy_failed
             }
 
         # 签到后积分验证
@@ -372,7 +427,8 @@ def run_checkin(account_user=None, account_pwd=None):
                 'points': current_points,
                 'username': masked_user,
                 'retries': retry_stats['count'],
-                'screenshot': screenshot_path
+                'screenshot': screenshot_path,
+                'proxy': proxy, 'proxy_failed': proxy_failed
             }
 
         logger_adapter.info(f"签到成功，积分从 {points_before} 增加到 {current_points}")
@@ -383,10 +439,20 @@ def run_checkin(account_user=None, account_pwd=None):
             'points': current_points,
             'username': masked_user,
             'retries': retry_stats['count'],
-            'screenshot': screenshot_path
+            'screenshot': screenshot_path,
+            'proxy': proxy, 'proxy_failed': proxy_failed
         }
 
     except Exception as e:
+        error_msg = str(e)
+        # 判断异常是否由代理引起（ERR_PROXY_CONNECTION_FAILED、renderer 超时等）
+        is_proxy_error = any(kw in error_msg for kw in (
+            "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
+            "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer"
+        ))
+        # 代理环境下，元素找不到通常是代理过慢导致页面 JS 未完整渲染
+        if proxy and not is_proxy_error and "no such element" in error_msg.lower():
+            is_proxy_error = True
         logger_adapter.error(f"签到任务执行失败: {e}")
         import traceback
         logger_adapter.error(f"详细错误信息: {traceback.format_exc()}")
@@ -399,7 +465,8 @@ def run_checkin(account_user=None, account_pwd=None):
             'points': 0,
             'username': masked_user,
             'retries': retry_stats['count'],
-            'screenshot': screenshot_path
+            'screenshot': screenshot_path,
+            'proxy': proxy, 'proxy_failed': is_proxy_error
         }
     finally:
         if driver is not None:
@@ -492,7 +559,17 @@ def run_all_accounts():
                 retry_info = f"（第 {results[username]['retry_count'] + 1} 次尝试）" if results[username]['retry_count'] > 0 else ""
                 logger.info(f"========== 启动账号 {account_idx}/{len(accounts)} {retry_info} ==========")
 
-                future = executor.submit(run_checkin, username, password)
+                # 重试时复用上次代理，避免换 IP 导致 Cookie 失效。
+                # 但如果上次失败是代理问题（proxy_failed），则不复用——慢代理通过 validate_proxy
+                # 却无法支撑浏览器会话，复用只会重复同样的失败。
+                reuse_proxy = None
+                if results[username]['result'] and results[username]['result'].get('proxy'):
+                    if not results[username]['result'].get('proxy_failed'):
+                        reuse_proxy = results[username]['result']['proxy']
+                    else:
+                        logger.info(f"上次失败由代理引起，不复用旧代理，重新抓取")
+
+                future = executor.submit(run_checkin, username, password, reuse_proxy)
                 future_to_account[future] = username
 
             for future in concurrent.futures.as_completed(future_to_account):
