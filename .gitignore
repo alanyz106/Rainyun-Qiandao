@@ -1,12 +1,38 @@
+# ===== Python 缓存 / 编译产物 =====
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.DS_Store
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+
+# ===== 环境变量 / 密钥 =====
 .env
+.env.*
+!.env.example
+
+# ===== 本地数据库文件 =====
 ip2region.xdb
 ip2region_v4.xdb
-temp/gh-artifacts/
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ===== 运行产物 / 临时目录 =====
+temp/
+*.stackdump
+.playwright-mcp/
+
+# ===== 本地记忆（不入库） =====
 memory/
+
+# ===== 项目本地文档（不入库） =====
+AGENTS.md
+CLAUDE.md
