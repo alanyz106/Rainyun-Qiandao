@@ -365,6 +365,11 @@ def validate_proxy(proxy, timeout=5, max_response_time=3):
             logger.warning(f"代理验证失败，状态码: {response.status_code}")
             return False
 
+    except requests.exceptions.SSLError as e:
+        # 代理做 HTTPS 中间人（用自己的证书替换目标站证书），requests 默认 verify=True 会拒绝。
+        # 这类代理在 headless Chrome 下会触发 "Your connection is not private" → 页面打不开。
+        logger.warning(f"代理 {proxy} 触发 SSL 错误，疑似 MITM 中间人代理: {str(e)[:120]}")
+        return False
     except requests.Timeout:
         logger.warning(f"代理 {proxy} 验证超时")
         return False
@@ -395,10 +400,16 @@ def check_rainyun_blocked(timeout=8):
         return True
 
 
-def get_freeproxy_ip():
+def get_freeproxy_ip(max_attempts=3):
     """
     使用改进版 freeproxy 抓取国内免费代理，以 app.rainyun.com 为探针并发验证，
     找到可用代理即停止。仅用于 Actions 海外环境绕过 IP 拦截。
+
+    抓到代理后用 validate_proxy 复核（默认 verify=True），淘汰 HTTPS MITM 代理：
+    freeproxy 探针可能放宽 SSL 校验，MITM 代理也能蒙混拿到 200，但 headless Chrome
+    默认校验证书链会拒绝，页面显示 "Your connection is not private"。复核失败则
+    重新抓取，最多 max_attempts 次。
+    :param max_attempts: 抓取+复核的最大尝试次数
     :return: 代理地址字符串 "ip:port"，无可用代理时返回 None
     """
     try:
@@ -421,49 +432,65 @@ def get_freeproxy_ip():
 
     logger.info("正在抓取国内免费代理（以 app.rainyun.com 为探针，找到即停）...")
 
-    try:
-        client = ProxiedSessionClient(
-            proxy_sources=proxy_sources,
-            init_proxied_session_cfg={
-                "max_pages": 2,
-                "filter_rule": {"country_code": ["CN"], "protocol": ["http", "https"]},
-            },
-            disable_print=True,
-            lazy=True,  # 不在构造阶段抓取，交给 fetch_working_streaming 边抓边验、命中即停
-        )
-
-        def _is_valid(resp):
-            # 能拿到 200 响应且响应够快，才证明代理可用于浏览器会话。
-            # 慢代理（>3s）会导致页面加载不完整、Cookie 无法送达，被误判为"Cookie 失效"。
-            try:
-                if resp.status_code != 200:
-                    return False
-                if resp.elapsed.total_seconds() > 3:
-                    return False
-                return True
-            except Exception:
+    def _is_valid(resp):
+        # 能拿到 200 响应且响应够快，才证明代理可用于浏览器会话。
+        # 慢代理（>3s）会导致页面加载不完整、Cookie 无法送达，被误判为"Cookie 失效"。
+        # 注意：此处无法识别 HTTPS MITM 代理——freeproxy 探针可能放宽 SSL 校验，
+        # MITM 代理也能拿到 200。MITM 拦截在下方 validate_proxy 复核阶段淘汰。
+        try:
+            if resp.status_code != 200:
                 return False
+            if resp.elapsed.total_seconds() > 3:
+                return False
+            return True
+        except Exception:
+            return False
 
-        working = client.fetch_working_streaming(
-            test_url="https://app.rainyun.com/",
-            need=1,
-            source_timeout=15,
-            validate_timeout=5,
-            validate_workers=64,
-            method="GET",
-            is_valid=_is_valid,
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client = ProxiedSessionClient(
+                proxy_sources=proxy_sources,
+                init_proxied_session_cfg={
+                    "max_pages": 2,
+                    "filter_rule": {"country_code": ["CN"], "protocol": ["http", "https"]},
+                },
+                disable_print=True,
+                lazy=True,  # 不在构造阶段抓取，交给 fetch_working_streaming 边抓边验、命中即停
+            )
+            working = client.fetch_working_streaming(
+                test_url="https://app.rainyun.com/",
+                need=1,
+                source_timeout=15,
+                validate_timeout=5,
+                validate_workers=64,
+                method="GET",
+                is_valid=_is_valid,
+            )
+        except Exception as e:
+            logger.error(f"抓取国内代理失败（第 {attempt}/{max_attempts} 次）: {e}")
+            continue
+
+        if not working:
+            logger.warning(f"未找到可用国内代理（第 {attempt}/{max_attempts} 次）")
+            continue
+
+        # fetch_working_streaming 返回 requests 格式字典，提取 ip:port 供 Selenium 使用
+        proxy_dict = working[0]
+        proxy_url = proxy_dict.get("http") or proxy_dict.get("https") or ""
+        proxy_str = proxy_url.replace("http://", "").replace("https://", "").strip("/")
+        if not proxy_str:
+            continue
+        logger.info(f"获取到候选国内代理 {proxy_str}")
+
+        # 严格复核：用 requests 默认 verify=True 走代理访问 app.rainyun.com，
+        # MITM 代理会抛 SSLError → validate_proxy 返回 False；慢代理也会被淘汰。
+        # 这是 headless Chrome 真实行为的预演（Chrome 默认校验证书链）。
+        if validate_proxy(proxy_str):
+            logger.info(f"代理 {proxy_str} 复核通过（连通性 + SSL 证书链正常）")
+            return proxy_str
+        logger.warning(
+            f"代理 {proxy_str} 复核未通过（第 {attempt}/{max_attempts} 次），重新抓取"
         )
-    except Exception as e:
-        logger.error(f"抓取国内代理失败: {e}")
-        return None
 
-    if not working:
-        logger.warning("未找到可用的国内代理")
-        return None
-
-    # fetch_working_streaming 返回 requests 格式字典，提取 ip:port 供 Selenium 使用
-    proxy_dict = working[0]
-    proxy_url = proxy_dict.get("http") or proxy_dict.get("https") or ""
-    proxy_str = proxy_url.replace("http://", "").replace("https://", "").strip("/")
-    logger.info(f"获取到可用国内代理 {proxy_str}")
-    return proxy_str if proxy_str else None
+    logger.warning(f"经过 {max_attempts} 次抓取，未找到通过复核的国内代理")
+    return None

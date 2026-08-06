@@ -24,6 +24,24 @@ from rainyun.report import generate_html_report, generate_markdown_report, gener
 logger = logging.getLogger(__name__)
 
 
+def _is_ssl_blocked_text(text):
+    """检测页面文字是否为 SSL/证书警告页（代理 MITM 或连接不安全）。
+    headless Chrome 拒绝 MITM 代理的伪造证书时会显示 "Your connection is not private"。
+    """
+    if not text:
+        return False
+    text_lower = text.lower()
+    ssl_keywords = (
+        "your connection is not private",   # Chrome NET::ERR_CERT_AUTHORITY_INVALID 等
+        "your connection is not secure",    # Firefox
+        "net::err_cert",                    # Chrome 各类证书错误
+        "net::err_ssl",                     # Chrome SSL 协议错误
+        "potential security risk ahead",    # Firefox 警告页
+        "ssl_error",                        # 通用 SSL 错误
+    )
+    return any(kw in text_lower for kw in ssl_keywords)
+
+
 def dismiss_modal_confirm(driver, timeout):
     modules = import_selenium_modules()
     WebDriverWait = modules['WebDriverWait']
@@ -190,7 +208,8 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
             error_msg = str(e)
             if any(kw in error_msg for kw in (
                 "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
-                "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer"
+                "ERR_TIMED_OUT", "ERR_CONNECTION", "ERR_CERT", "ERR_SSL",
+                "Timed out receiving message from renderer"
             )):
                 logger_adapter.error(f"代理连接失败，页面无法加载: {error_msg[:200]}")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
@@ -296,17 +315,26 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
 
         if earn is None:
             logger_adapter.error("无法找到每日签到按钮")
+            body_text = ""
             try:
                 body_text = driver.find_element(By.TAG_NAME, "body").text[:500]
                 logger_adapter.error(f"页面可见文字（前500字）: {body_text}")
             except Exception:
                 pass
+            # 识别代理 SSL 中间人：headless Chrome 拒绝 MITM 证书 → 显示 "Your connection is not private"。
+            # 此类失败必须标记 proxy_failed，否则重试会复用同一个坏代理 → 重复失败。
+            ssl_blocked = _is_ssl_blocked_text(body_text)
+            if ssl_blocked:
+                proxy_failed = True
+                logger_adapter.error("检测到代理 SSL 拦截（MITM），标记 proxy_failed 以便重试换代理")
             screenshot_path = save_screenshot(driver, current_user, status="failure")
             return {
-                'status': False, 'msg': '签到按钮未找到', 'points': 0,
+                'status': False,
+                'msg': '代理 SSL 拦截：页面无法加载' if ssl_blocked else '签到按钮未找到',
+                'points': 0,
                 'username': masked_user,
                 'retries': retry_stats['count'], 'screenshot': screenshot_path,
-                'proxy': proxy, 'proxy_failed': proxy_failed
+                'proxy': proxy, 'proxy_failed': ssl_blocked or proxy_failed
             }
 
         btn_text = earn.text.strip()
@@ -442,7 +470,8 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
         # 判断异常是否由代理引起（ERR_PROXY_CONNECTION_FAILED、renderer 超时等）
         is_proxy_error = any(kw in error_msg for kw in (
             "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
-            "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer"
+            "ERR_TIMED_OUT", "ERR_CONNECTION", "ERR_CERT", "ERR_SSL",
+            "Timed out receiving message from renderer"
         ))
         # 代理环境下，元素找不到通常是代理过慢导致页面 JS 未完整渲染
         if proxy and not is_proxy_error and "no such element" in error_msg.lower():
