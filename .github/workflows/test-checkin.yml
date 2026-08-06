@@ -62,7 +62,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-checkin-logs-${{ github.run_number }}
-          path: logs/
+          path: |
+            logs/*.log
+            logs/captcha_debug/
           retention-days: 7
 
       - name: 上传截图
@@ -72,3 +74,12 @@ jobs:
           name: test-checkin-screenshots-${{ github.run_number }}
           path: temp/screenshots/
           retention-days: 7
+
+      - name: 上传验证码图片归档
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-captcha-images-${{ github.run_number }}
+          path: logs/captcha_archive/
+          if-no-files-found: ignore
+          retention-days: 30

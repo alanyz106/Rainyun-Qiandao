@@ -27,6 +27,7 @@ Thumbs.db
 
 # ===== 运行产物 / 临时目录 =====
 temp/
+logs/
 *.stackdump
 .playwright-mcp/
 

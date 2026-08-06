@@ -111,7 +111,19 @@ jobs:
         with:
           name: checkin-logs-${{ github.run_number }}
           path: |
-            logs/
+            logs/*.log
+            logs/captcha_debug/
             temp/screenshots/
           if-no-files-found: ignore
           retention-days: 7
+
+      # 10. 上传验证码图片归档（每次挑战的大图/图案/候选框，便于算法回归测试）
+      #     若某天多次重试，可下载此 artifact 在本地用 script/captcha_compare.py 复现对比
+      - name: 上传验证码图片归档
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captcha-images-${{ github.run_number }}
+          path: logs/captcha_archive/
+          if-no-files-found: ignore
+          retention-days: 30

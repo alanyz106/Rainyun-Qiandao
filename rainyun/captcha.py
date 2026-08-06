@@ -97,6 +97,8 @@ class TencentCaptchaProvider(CaptchaProvider):
         if retry_stats is None:
             retry_stats = {'count': 0}
 
+        attempt_index = retry_stats['count']
+
         if self.max_retries >= 0 and retry_stats['count'] >= self.max_retries:
             logger_adapter.warning(
                 f"本地方案已达到最大重试次数 {self.max_retries}，放弃并切换到备用方案"
@@ -312,6 +314,11 @@ class TencentCaptchaProvider(CaptchaProvider):
                 result_elem = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="tcOperation"]')))
                 if result_elem.get_attribute("class") == 'tc-opera pointer show-success':
                     logger_adapter.info("验证码通过 🎉")
+                    save_captcha_archive_bundle(logger_adapter, attempt_index, "pass", {
+                        "best_total_score": best_total_score,
+                        "use_fallback": use_fallback,
+                        "click_positions": final_click_positions,
+                    })
                     return
                 else:
                     logger_adapter.error(f"验证码提交后未通过，匹配坐标可能存在偏移。")
@@ -334,12 +341,21 @@ class TencentCaptchaProvider(CaptchaProvider):
             reload_btn.click()
             time.sleep(3)
             logger_adapter.info(f"重新发起验证码挑战 (当前重试: {retry_stats['count']})")
+            attempt_extra = {"best_total_score": best_total_score, "use_fallback": use_fallback}
+            if use_fallback:
+                attempt_extra["fallback_total_score"] = fallback_total_score
+                attempt_extra["click_positions"] = final_click_positions
+            else:
+                attempt_extra["assigned_scores"] = assigned_scores
+            save_captcha_archive_bundle(logger_adapter, attempt_index, "retry", attempt_extra)
             return self.solve(driver, timeout, retry_stats, logger_adapter)
 
         except TimeoutException:
             logger_adapter.error("获取验证码图片等元素超时")
+            save_captcha_archive_bundle(logger_adapter, attempt_index, "error", {"reason": "timeout"})
         except Exception as e:
             logger_adapter.error(f"验证码执行流程中发生未知错误: {e}")
+            save_captcha_archive_bundle(logger_adapter, attempt_index, "error", {"reason": "exception", "error": str(e)[:200]})
             import traceback
             logger_adapter.debug(traceback.format_exc())
             retry_stats['count'] += 1
@@ -1306,6 +1322,8 @@ class TwoCaptchaProvider(CaptchaProvider):
         if retry_stats is None:
             retry_stats = {'count': 0}
 
+        attempt_index = retry_stats['count']
+
         if self.max_retries >= 0 and retry_stats['count'] >= self.max_retries:
             logger_adapter.warning(f"2captcha 已达到最大重试次数 {self.max_retries}，放弃")
             return False
@@ -1347,6 +1365,7 @@ class TwoCaptchaProvider(CaptchaProvider):
                 logger_adapter.error("2captcha 未能返回有效坐标")
                 retry_stats['count'] += 1
                 time.sleep(3)
+                save_captcha_archive_bundle(logger_adapter, attempt_index, "retry", {"reason": "no_coords"})
                 return self.solve(driver, timeout, retry_stats, logger_adapter)
 
             captcha_coords = []
@@ -1361,6 +1380,7 @@ class TwoCaptchaProvider(CaptchaProvider):
                 logger_adapter.error(f"有效点击坐标不足3个 (仅 {len(captcha_coords)} 个)，刷新重试")
                 retry_stats['count'] += 1
                 time.sleep(3)
+                save_captcha_archive_bundle(logger_adapter, attempt_index, "retry", {"reason": "insufficient_coords", "n": len(captcha_coords)})
                 return self.solve(driver, timeout, retry_stats, logger_adapter)
 
             final_coords = captcha_coords[:3]
@@ -1392,20 +1412,26 @@ class TwoCaptchaProvider(CaptchaProvider):
                 (By.XPATH, '//*[@id="tcOperation"]')))
             if result_elem.get_attribute("class") == 'tc-opera pointer show-success':
                 logger_adapter.info("验证码通过 🎉")
+                save_captcha_archive_bundle(logger_adapter, attempt_index, "pass", {
+                    "click_coords": final_coords,
+                })
                 return
             else:
                 logger_adapter.error("2captcha 验证码提交后未通过")
                 retry_stats['count'] += 1
                 time.sleep(3)
+                save_captcha_archive_bundle(logger_adapter, attempt_index, "retry", {"reason": "submit_failed"})
                 return self.solve(driver, timeout, retry_stats, logger_adapter)
 
         except TimeoutException:
             logger_adapter.error("获取验证码元素超时")
+            save_captcha_archive_bundle(logger_adapter, attempt_index, "error", {"reason": "timeout"})
         except Exception as e:
             logger_adapter.error(f"2captcha 执行流程中发生错误: {e}")
             import traceback
             logger_adapter.debug(traceback.format_exc())
             retry_stats['count'] += 1
+            save_captcha_archive_bundle(logger_adapter, attempt_index, "retry", {"reason": "exception", "error": str(e)[:200]})
             try:
                 reload_btn = driver.find_element(By.XPATH, '//*[@id="reload"]')
                 reload_btn.click()
@@ -1660,3 +1686,64 @@ def get_captcha_provider():
             TwoCaptchaProvider(),
         )
     return TencentCaptchaProvider(max_retries=2)
+
+
+def save_captcha_archive_bundle(logger_adapter, attempt_index, outcome, extra=None):
+    """每次验证码挑战结束后，把本轮的图片（大图/图案/候选框/拼合图）归档到
+    logs/captcha_archive/<日期>/<账号前缀>_a<次数>_<结果>/，用于后续在本地或 CI artifact
+    中下载，做算法回归测试与对比（例如复现某天多次重试的失败样本）。
+
+    与 _save_captcha_debug_bundle（只在特定失败分支触发）不同，本函数对**每一次**挑战
+    （无论通过 / 重试 / 异常）都归档，保证样本完整。
+
+    :param attempt_index: 第几次挑战（0-based，取自 retry_stats['count']）
+    :param outcome: pass / retry / error
+    :param extra: 额外元数据（得分、点击坐标、原因等），写入 metadata.json
+    """
+    # 关闭开关：设置环境变量 CAPTCHA_ARCHIVE=0 可跳过归档（避免图片堆积）
+    if os.getenv("CAPTCHA_ARCHIVE", "1") == "0":
+        return
+
+    import json
+    import shutil
+
+    from rainyun.config import now_local
+
+    account_prefix = TencentCaptchaProvider._make_safe_name(
+        getattr(logger_adapter, "extra", {}).get("prefix", "unknown")
+    )
+    date_str = now_local().strftime("%Y-%m-%d")
+    bundle_name = f"a{attempt_index:02d}_{outcome}"
+    bundle_dir = os.path.join("logs", "captcha_archive", date_str, account_prefix, bundle_name)
+    os.makedirs(bundle_dir, exist_ok=True)
+
+    temp_dir = "temp"
+    copied = []
+    if os.path.isdir(temp_dir):
+        wanted_exact = {"captcha.jpg", "sprite.jpg", "combined_captcha.jpg"}
+        for filename in sorted(os.listdir(temp_dir)):
+            if not (
+                filename in wanted_exact
+                or filename.startswith("sprite_")
+                or filename.startswith("spec_")
+            ):
+                continue
+            src = os.path.join(temp_dir, filename)
+            if not os.path.isfile(src):
+                continue
+            shutil.copy2(src, os.path.join(bundle_dir, filename))
+            copied.append(filename)
+
+    metadata = {
+        "outcome": outcome,
+        "attempt_index": attempt_index,
+        "account_prefix": account_prefix,
+        "captured_at": now_local().isoformat(timespec="seconds"),
+        "files": copied,
+        "extra": extra or {},
+    }
+    with open(os.path.join(bundle_dir, "metadata.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+    if copied:
+        logger_adapter.info(f"已归档验证码样本（第{attempt_index}次, {outcome}）: {bundle_dir}")
