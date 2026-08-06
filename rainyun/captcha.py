@@ -705,6 +705,63 @@ class TencentCaptchaProvider(CaptchaProvider):
         return binary if binary.size > 0 else None
 
     @staticmethod
+    def _extract_dark_foreground_mask(image, crop_foreground=False, padding=2, dark_threshold=80, sat_threshold=120):
+        """
+        提取图像中的"深色（黑色/近黑）前景" mask。
+
+        适用场景：在彩色背景里找黑色线条图标（腾讯点选验证码的核心场景）。
+        相对于 OTSU 二值化的优势：不受彩色背景干扰——狮子、草、天空等都会被排除，
+        只保留需要点击的黑色图标。Canny 边缘会提取整张图的轮廓作为噪声，
+        HSV 黑色 + 形态学闭运算能精准定位前景。
+
+        策略：
+        - HSV 黑色判定：V < dark_threshold 且 S < sat_threshold
+        - 形态学闭运算：填补图标内部小孔（如数字 0/8/B 等的封闭区域）
+
+        :param image: BGR 或灰度图
+        :param crop_foreground: 是否裁剪到前景最小包围盒（sprite 用 True，大图用 False）
+        :param padding: 裁剪时的 padding
+        :param dark_threshold: V 通道阈值（< 则视为深色）
+        :param sat_threshold: S 通道阈值（< 则视为近灰/黑）
+        :return: 前景 mask (numpy.uint8, 0/255)，失败返回 None
+        """
+        import cv2
+        import numpy as np
+
+        if image is None:
+            return None
+
+        if len(image.shape) == 3:
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            v_channel = hsv[:, :, 2]
+            s_channel = hsv[:, :, 1]
+        else:
+            v_channel = image
+            s_channel = np.zeros_like(image)
+
+        # HSV 黑色判定：低饱和 + 低明度 → 黑色/深灰前景
+        dark_mask = ((v_channel < dark_threshold) & (s_channel < sat_threshold)).astype(np.uint8) * 255
+
+        # 形态学闭运算：填补图标内部小孔
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel)
+
+        if crop_foreground:
+            coords = cv2.findNonZero(dark_mask)
+            if coords is None:
+                return None
+            x, y, w, h = cv2.boundingRect(coords)
+            x = max(0, x - padding)
+            y = max(0, y - padding)
+            w = min(dark_mask.shape[1] - x, w + padding * 2)
+            h = min(dark_mask.shape[0] - y, h + padding * 2)
+            if w <= 0 or h <= 0:
+                return None
+            dark_mask = dark_mask[y:y + h, x:x + w]
+
+        return dark_mask if dark_mask.size > 0 else None
+
+    @staticmethod
     def _make_safe_name(raw_name):
         import re
         safe_name = re.sub(r'[^0-9A-Za-z._-]+', '_', raw_name or "unknown")
@@ -965,20 +1022,11 @@ class TencentCaptchaProvider(CaptchaProvider):
         if sprite_img is None or captcha_img is None:
             return []
 
-        gray_sprite = cv2.cvtColor(sprite_img, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(gray_sprite, 240, 255, cv2.THRESH_BINARY_INV)
-        coords = cv2.findNonZero(binary)
-        if coords is not None:
-            x, y, w, h = cv2.boundingRect(coords)
-            x = max(0, x - 2)
-            y = max(0, y - 2)
-            w = min(sprite_img.shape[1] - x, w + 4)
-            h = min(sprite_img.shape[0] - y, h + 4)
-            sprite_icon = sprite_img[y:y+h, x:x+w]
-        else:
-            sprite_icon = sprite_img
-
-        sprite_gray = cv2.cvtColor(sprite_icon, cv2.COLOR_BGR2GRAY)
+        # 从 sprite 中提取黑色前景 mask（裁剪到前景包围盒）。腾讯验证码 sprite 是白底黑图标，
+        # 用 HSV 黑色 + 形态学闭运算能精准提取，避免原代码固定阈值(240) 在彩色 sprite 上失效。
+        sprite_mask = self._extract_dark_foreground_mask(sprite_img, crop_foreground=True, padding=2)
+        if sprite_mask is None:
+            return []
 
         origin_x, origin_y = 0, 0
         if search_box is not None:
@@ -995,34 +1043,43 @@ class TencentCaptchaProvider(CaptchaProvider):
         if captcha_view.size == 0:
             return []
 
-        captcha_gray = cv2.cvtColor(captcha_view, cv2.COLOR_BGR2GRAY)
-
-        sprite_canny = cv2.Canny(sprite_gray, 50, 150)
-        captcha_canny = cv2.Canny(captcha_gray, 50, 150)
+        # 从大图提取黑色前景 mask（不裁剪，保留完整搜索范围）。
+        # 关键改进：Canny 边缘会把狮子、草、天空的轮廓全当噪声，
+        # HSV 黑色只保留需要点击的黑色图标，匹配信号大幅提升。
+        captcha_mask = self._extract_dark_foreground_mask(captcha_view, crop_foreground=False)
+        if captcha_mask is None:
+            return []
 
         if (
-            captcha_canny.shape[0] < sprite_canny.shape[0]
-            or captcha_canny.shape[1] < sprite_canny.shape[1]
+            captcha_mask.shape[0] < sprite_mask.shape[0]
+            or captcha_mask.shape[1] < sprite_mask.shape[1]
         ):
             return []
 
-        h_s, w_s = sprite_canny.shape
+        h_s, w_s = sprite_mask.shape
         candidates = []
 
         for angle in [-15, 0, 15]:
             if angle != 0:
-                M = cv2.getRotationMatrix2D((w_s//2, h_s//2), angle, 1.0)
-                rotated_canny = cv2.warpAffine(sprite_canny, M, (w_s, h_s), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                M = cv2.getRotationMatrix2D((w_s // 2, h_s // 2), angle, 1.0)
+                rotated_mask = cv2.warpAffine(
+                    sprite_mask,
+                    M,
+                    (w_s, h_s),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
             else:
-                rotated_canny = sprite_canny
+                rotated_mask = sprite_mask
 
             if (
-                captcha_canny.shape[0] < rotated_canny.shape[0]
-                or captcha_canny.shape[1] < rotated_canny.shape[1]
+                captcha_mask.shape[0] < rotated_mask.shape[0]
+                or captcha_mask.shape[1] < rotated_mask.shape[1]
             ):
                 continue
 
-            res = cv2.matchTemplate(captcha_canny, rotated_canny, cv2.TM_CCOEFF_NORMED)
+            res = cv2.matchTemplate(captcha_mask, rotated_mask, cv2.TM_CCOEFF_NORMED)
             res_work = res.copy()
 
             for _ in range(top_k):
@@ -1030,8 +1087,8 @@ class TencentCaptchaProvider(CaptchaProvider):
                 if max_val <= 0:
                     break
 
-                center_x = origin_x + max_loc[0] + rotated_canny.shape[1] // 2
-                center_y = origin_y + max_loc[1] + rotated_canny.shape[0] // 2
+                center_x = origin_x + max_loc[0] + rotated_mask.shape[1] // 2
+                center_y = origin_y + max_loc[1] + rotated_mask.shape[0] // 2
                 candidates.append({
                     "pos": f"{center_x},{center_y}",
                     "coords": (center_x, center_y),
@@ -1041,8 +1098,8 @@ class TencentCaptchaProvider(CaptchaProvider):
 
                 left = max(0, max_loc[0] - min_distance)
                 top = max(0, max_loc[1] - min_distance)
-                right = min(res_work.shape[1], max_loc[0] + rotated_canny.shape[1] + min_distance)
-                bottom = min(res_work.shape[0], max_loc[1] + rotated_canny.shape[0] + min_distance)
+                right = min(res_work.shape[1], max_loc[0] + rotated_mask.shape[1] + min_distance)
+                bottom = min(res_work.shape[0], max_loc[1] + rotated_mask.shape[0] + min_distance)
                 res_work[top:bottom, left:right] = -1.0
 
         return self._dedupe_candidates(candidates, min_distance=min_distance, top_k=top_k)
