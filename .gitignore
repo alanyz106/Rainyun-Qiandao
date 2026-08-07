@@ -31,6 +31,13 @@ logs/
 *.stackdump
 .playwright-mcp/
 
+# ===== 验证码样本仓库归档（主动提交，不忽略） =====
+# captcha_samples/ 由 CI 每天从 logs/captcha_archive/ 复制并提交到仓库，用于长期保存训练数据。
+# 注意：不忽略该目录，但忽略临时训练输出。
+!captcha_samples/
+captcha_samples/**/debug/
+captcha_samples/**/*.tmp
+
 # ===== 本地记忆（不入库） =====
 memory/
 

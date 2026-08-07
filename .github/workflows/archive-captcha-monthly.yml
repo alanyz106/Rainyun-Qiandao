@@ -1,0 +1,71 @@
+name: 月度验证码样本归档
+
+on:
+  # 每月 1 号 UTC 20:00（北京时间 2 号 04:00）执行，打包上个月零散样本
+  schedule:
+    - cron: '0 20 1 * *'
+  # 手动触发（方便测试指定月份）
+  workflow_dispatch:
+    inputs:
+      month:
+        description: '要打包的月份（YYYY-MM，留空则自动上个月）'
+        required: false
+        default: ''
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 确定目标月份
+        id: month
+        run: |
+          if [ -n "${{ github.event.inputs.month }}" ]; then
+            TARGET_MONTH="${{ github.event.inputs.month }}"
+          else
+            TARGET_MONTH=$(date -d "last month" +%Y-%m)
+          fi
+          echo "target_month=${TARGET_MONTH}" >> $GITHUB_OUTPUT
+          echo "目标月份: ${TARGET_MONTH}"
+
+      - name: 打包并清理月度验证码样本
+        id: pack
+        run: |
+          TARGET_MONTH="${{ steps.month.outputs.target_month }}"
+          SRC_DIR="captcha_samples/${TARGET_MONTH}"
+          ARCHIVE_DIR="captcha_samples/archives"
+          ARCHIVE="${ARCHIVE_DIR}/${TARGET_MONTH}.zip"
+
+          if [ ! -d "${SRC_DIR}" ]; then
+            echo "无样本目录: ${SRC_DIR}，跳过"
+            echo "archived=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          mkdir -p "${ARCHIVE_DIR}"
+          zip -r "${ARCHIVE}" "${SRC_DIR}/"
+          rm -rf "${SRC_DIR}"
+          echo "已生成归档: ${ARCHIVE}"
+          echo "archived=true" >> $GITHUB_OUTPUT
+
+      - name: 提交归档文件
+        if: steps.pack.outputs.archived == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add captcha_samples/
+          if git diff --staged --quiet; then
+            echo "无变更，跳过提交"
+          else
+            git commit -m "🗜️ 月度验证码样本归档: ${{ steps.month.outputs.target_month }} [skip ci]"
+            git push
+          fi

@@ -90,17 +90,34 @@ jobs:
         run: |
           python rainyun.py
 
-      # 8. 将签到记录（stats/）commit 回仓库，供后续月统计读取
-      - name: 提交签到记录
+      # 8. 将签到记录（stats/）与验证码样本归档提交回仓库
+      - name: 提交签到记录与验证码样本
         if: always()
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 8.1 提交签到记录
           git add stats/
+
+          # 8.2 提交验证码样本（长期保存，替代 30 天过期的 artifact）
+          TODAY=$(date +%Y-%m-%d)
+          MONTH=$(date +%Y-%m)
+          SRC_DAY="logs/captcha_archive/${TODAY}"
+          DEST="captcha_samples/${MONTH}/${TODAY}/${RUN_NUMBER}"
+          if [ -d "${SRC_DAY}" ] && [ -n "$(find "${SRC_DAY}" -type f -name '*.jpg' 2>/dev/null | head -1)" ]; then
+            mkdir -p "${DEST}"
+            cp -r "${SRC_DAY}/." "${DEST}/"
+            git add captcha_samples/
+            echo "已归档验证码样本: ${DEST}"
+          fi
+
           if git diff --staged --quiet; then
-            echo "无签到记录变更，跳过提交"
+            echo "无变更，跳过提交"
           else
-            git commit -m "📊 签到记录: $(date +%Y-%m-%d) [skip ci]"
+            git commit -m "📊 签到记录与验证码样本: $(date +%Y-%m-%d) [skip ci]"
             git push
           fi
 

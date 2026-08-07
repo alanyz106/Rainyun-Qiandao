@@ -1,0 +1,27 @@
+{
+  "outcome": "retry",
+  "attempt_index": 1,
+  "account_prefix": "coc_ty",
+  "captured_at": "2026-08-07T11:16:53+08:00",
+  "files": [
+    "captcha.jpg",
+    "spec_1.jpg",
+    "spec_2.jpg",
+    "spec_3.jpg",
+    "spec_4.jpg",
+    "sprite.jpg",
+    "sprite_1.jpg",
+    "sprite_2.jpg",
+    "sprite_3.jpg"
+  ],
+  "extra": {
+    "best_total_score": 12.924081198662055,
+    "use_fallback": true,
+    "fallback_total_score": 101.71503318026815,
+    "click_positions": [
+      "360,120",
+      "216,33",
+      "325,286"
+    ]
+  }
+}
