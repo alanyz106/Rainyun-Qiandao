@@ -36,6 +36,7 @@ from rainyun.captcha._search import (
     find_template_candidates,
     select_best_candidate_combo,
 )
+from rainyun.captcha._siamese import match_sprites_to_boxes, hungry_assign
 from rainyun.config import import_selenium_modules, now_local
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ class TencentCaptchaProvider:
             final_click_positions = []
             use_fallback = False
             assigned_scores = []
+            siamese_ok = False
 
             if best_assignment is not None and best_total_score >= MIN_ACCEPTABLE_TOTAL_SCORE:
                 assigned_scores = [score_matrix[j][best_assignment[j]] for j in range(3)]
@@ -242,51 +244,154 @@ class TencentCaptchaProvider:
                 use_fallback = True
 
             if use_fallback:
-                fallback_candidates = []
-                for j in range(3):
-                    sprite_path = f"temp/sprite_{j + 1}.jpg"
-                    candidates = find_template_candidates(
-                        sprite_path,
-                        "temp/captcha.jpg",
-                        top_k=5,
-                        min_distance=24,
-                        target_profile=(
-                            sprite_profiles[j] if j < len(sprite_profiles) else None
-                        ),
-                    )
-                    fallback_candidates.append(candidates)
-                    if candidates:
-                        top_candidate = candidates[0]
-                        logger_adapter.info(
-                            f"--> [全图匹配] 图案 {j + 1} 首选坐标 ({top_candidate['pos']})，"
-                            f"候选数：{len(candidates)}，边缘响应分：{top_candidate['score']:.2f}"
+                # ===== V1: Siamese within ddddocr candidate boxes =====
+                siamese_ok = False
+                SIAMESE_MIN_CONFIDENCE = 0.6
+
+                if len(spec_infos) >= 3:
+                    logger_adapter.info("一阶段未通过，尝试 Siamese 匹配（候选框内）...")
+                    try:
+                        sprite_imgs = [cv2.imread(f"temp/sprite_{j+1}.jpg") for j in range(3)]
+                        bbox_list = [s["bbox"] for s in spec_infos]
+                        siam_scores = match_sprites_to_boxes(captcha, bbox_list, sprite_imgs)
+                        siam_assign, siam_total = hungry_assign(siam_scores)
+
+                        if siam_assign and len(siam_assign) == 3:
+                            siam_per_sprite = [siam_scores[j][siam_assign[j]] for j in range(3)]
+                            siam_min = min(siam_per_sprite)
+                            logger_adapter.info(
+                                f"Siamese 分配: {siam_assign}  总分={siam_total:.4f}  "
+                                f"单项={[f'{v:.3f}' for v in siam_per_sprite]}  "
+                                f"最低={siam_min:.3f}"
+                            )
+                            if siam_min >= SIAMESE_MIN_CONFIDENCE:
+                                for j in range(3):
+                                    spec_idx = siam_assign[j]
+                                    spec_info = spec_infos[spec_idx]
+                                    cx = int((spec_info["bbox"][0] + spec_info["bbox"][2]) / 2)
+                                    cy = int((spec_info["bbox"][1] + spec_info["bbox"][3]) / 2)
+                                    final_click_positions.append(f"{cx},{cy}")
+                                    logger_adapter.info(
+                                        f"--> [Siamese] 图案 {j+1} → 候选框 {spec_idx+1}  "
+                                        f"({cx},{cy})  相似度={siam_per_sprite[j]:.3f}"
+                                    )
+                                siamese_ok = True
+                            else:
+                                logger_adapter.warning(
+                                    f"Siamese 最低置信度 {siam_min:.3f} < {SIAMESE_MIN_CONFIDENCE}，"
+                                    f"尝试 mask 增强..."
+                                )
+                        else:
+                            logger_adapter.warning("Siamese 分配失败")
+                    except Exception as e:
+                        logger_adapter.warning(f"Siamese 匹配异常: {e}")
+
+                # ===== V2: mask + Siamese =====
+                if not siamese_ok:
+                    logger_adapter.info("尝试 mask 预处理 + Siamese...")
+                    try:
+                        masked_captcha = captcha.copy()
+                        black_mask = (
+                            (captcha[:, :, 0] <= 30)
+                            & (captcha[:, :, 1] <= 30)
+                            & (captcha[:, :, 2] <= 30)
                         )
-                    else:
-                        logger_adapter.info(f"--> [全图匹配] 图案 {j + 1} 未找到候选坐标")
+                        masked_captcha[~black_mask] = 255
 
-                selected_candidates, fallback_total_score = select_best_candidate_combo(
-                    fallback_candidates, min_distance=24,
-                )
-                final_click_positions = [
-                    candidate["pos"] for candidate in selected_candidates
-                ]
+                        cv2.imwrite("temp/captcha_masked.jpg", masked_captcha)
+                        with open("temp/captcha_masked.jpg", "rb") as f:
+                            mask_bytes = f.read()
+                        with get_inference_lock():
+                            mask_boxes = det.detection(mask_bytes)
 
-                MIN_FALLBACK_TOTAL_SCORE = 0.75
-                if fallback_total_score < MIN_FALLBACK_TOTAL_SCORE or len(final_click_positions) < 3:
-                    logger_adapter.error(
-                        f"全图匹配响应度过低 ({fallback_total_score:.2f} < "
-                        f"{MIN_FALLBACK_TOTAL_SCORE:.2f})，放弃提交并刷新"
+                        mask_specs = []
+                        for x1, y1, x2, y2 in mask_boxes:
+                            x1, y1 = int(max(0, x1)), int(max(0, y1))
+                            x2, y2 = int(min(captcha.shape[1], x2)), int(min(captcha.shape[0], y2))
+                            crop = masked_captcha[y1:y2, x1:x2]
+                            if is_meaningful_candidate_crop(crop):
+                                mask_specs.append((x1, y1, x2, y2))
+                        logger_adapter.info(
+                            f"mask 后 ddddocr 检测: {len(mask_specs)} 框 (原始: {len(spec_infos)})"
+                        )
+
+                        if len(mask_specs) >= 3:
+                            sprite_imgs2 = [cv2.imread(f"temp/sprite_{j+1}.jpg") for j in range(3)]
+                            mask_siam = match_sprites_to_boxes(captcha, mask_specs, sprite_imgs2)
+                            mask_assign, mask_total = hungry_assign(mask_siam)
+
+                            if mask_assign and len(mask_assign) == 3:
+                                mask_per = [mask_siam[j][mask_assign[j]] for j in range(3)]
+                                mask_min = min(mask_per)
+                                logger_adapter.info(
+                                    f"mask+Siamese 分配: {mask_assign}  总分={mask_total:.4f}  "
+                                    f"最低={mask_min:.3f}"
+                                )
+                                if mask_min >= SIAMESE_MIN_CONFIDENCE:
+                                    for j in range(3):
+                                        spec_idx = mask_assign[j]
+                                        x1, y1, x2, y2 = mask_specs[spec_idx]
+                                        cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                                        final_click_positions.append(f"{cx},{cy}")
+                                    siamese_ok = True
+                                    logger_adapter.info(
+                                        f"✅ mask+Siamese 通过 (≥ {SIAMESE_MIN_CONFIDENCE})"
+                                    )
+                                else:
+                                    logger_adapter.warning(
+                                        f"mask+Siamese 最低 {mask_min:.3f} < {SIAMESE_MIN_CONFIDENCE}"
+                                    )
+                    except Exception as e:
+                        logger_adapter.warning(f"mask+Siamese 异常: {e}")
+
+                # ===== V3: 像素回退 =====
+                if not siamese_ok:
+                    logger_adapter.info("Siamese 方案均失败，降级使用全图像素模板匹配...")
+                    fallback_candidates = []
+                    for j in range(3):
+                        sprite_path = f"temp/sprite_{j + 1}.jpg"
+                        candidates = find_template_candidates(
+                            sprite_path,
+                            "temp/captcha.jpg",
+                            top_k=5,
+                            min_distance=24,
+                            target_profile=(
+                                sprite_profiles[j] if j < len(sprite_profiles) else None
+                            ),
+                        )
+                        fallback_candidates.append(candidates)
+                        if candidates:
+                            top_candidate = candidates[0]
+                            logger_adapter.info(
+                                f"--> [全图匹配] 图案 {j + 1} 首选坐标 ({top_candidate['pos']})，"
+                                f"候选数：{len(candidates)}，边缘响应分：{top_candidate['score']:.2f}"
+                            )
+                        else:
+                            logger_adapter.info(f"--> [全图匹配] 图案 {j + 1} 未找到候选坐标")
+
+                    selected_candidates, fallback_total_score = select_best_candidate_combo(
+                        fallback_candidates, min_distance=24,
                     )
-                    self._save_captcha_debug_bundle(
-                        logger_adapter,
-                        stage="fallback_low_score",
-                        retry_count=retry_stats["count"],
-                        extra={
-                            "fallback_total_score": fallback_total_score,
-                            "click_positions": final_click_positions,
-                        },
-                    )
-                    final_click_positions = []
+                    final_click_positions = [
+                        candidate["pos"] for candidate in selected_candidates
+                    ]
+
+                    MIN_FALLBACK_TOTAL_SCORE = 0.75
+                    if fallback_total_score < MIN_FALLBACK_TOTAL_SCORE or len(final_click_positions) < 3:
+                        logger_adapter.error(
+                            f"全图匹配响应度过低 ({fallback_total_score:.2f} < "
+                            f"{MIN_FALLBACK_TOTAL_SCORE:.2f})，放弃提交并刷新"
+                        )
+                        self._save_captcha_debug_bundle(
+                            logger_adapter,
+                            stage="fallback_low_score",
+                            retry_count=retry_stats["count"],
+                            extra={
+                                "fallback_total_score": fallback_total_score,
+                                "click_positions": final_click_positions,
+                            },
+                        )
+                        final_click_positions = []
 
             if len(final_click_positions) == 3:
                 for positon in final_click_positions:
@@ -324,6 +429,7 @@ class TencentCaptchaProvider:
                     save_captcha_archive_bundle(logger_adapter, attempt_index, "pass", {
                         "best_total_score": best_total_score,
                         "use_fallback": use_fallback,
+                        "siamese_ok": siamese_ok,
                         "click_positions": final_click_positions,
                     })
                     return
