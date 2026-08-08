@@ -76,7 +76,7 @@ def get_captcha_provider():
     twocaptcha_key = os.getenv("TWOCAPTCHA_API_KEY", "").strip()
     if twocaptcha_key:
         return CompositeCaptchaProvider(
-            TencentCaptchaProvider(max_retries=3),
+            TencentCaptchaProvider(max_retries=5),
             TwoCaptchaProvider(),
         )
-    return TencentCaptchaProvider(max_retries=2)
+    return TencentCaptchaProvider(max_retries=5)
