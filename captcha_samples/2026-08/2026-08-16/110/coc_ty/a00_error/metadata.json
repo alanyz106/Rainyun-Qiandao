@@ -1,0 +1,20 @@
+{
+  "outcome": "error",
+  "attempt_index": 0,
+  "account_prefix": "coc_ty",
+  "captured_at": "2026-08-16T09:59:01+08:00",
+  "files": [
+    "captcha.jpg",
+    "spec_1.jpg",
+    "spec_2.jpg",
+    "spec_3.jpg",
+    "sprite.jpg",
+    "sprite_1.jpg",
+    "sprite_2.jpg",
+    "sprite_3.jpg"
+  ],
+  "extra": {
+    "reason": "exception",
+    "error": "cannot access local variable 'fallback_total_score' where it is not associated with a value"
+  }
+}
