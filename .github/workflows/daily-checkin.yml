@@ -85,6 +85,9 @@ jobs:
           CHECKIN_MAX_RETRIES: '0'
           # 2captcha API Key (可选，配置后使用2captcha破解验证码)
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
+          # 远程 YOLO 验证码 API（模型部署在 huasuanyun，配置后主链路走 API，未配置走本地降级）
+          CAPTCHA_API_URL: ${{ secrets.CAPTCHA_API_URL }}
+          CAPTCHA_API_TOKEN: ${{ secrets.CAPTCHA_API_TOKEN }}
           # 截图嵌入策略 (all / failed_only / none)
           SCREENSHOT_MODE: ${{ secrets.SCREENSHOT_MODE || 'failed_only' }}
         run: |

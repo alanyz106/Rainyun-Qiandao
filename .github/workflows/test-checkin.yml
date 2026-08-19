@@ -54,6 +54,9 @@ jobs:
           TIMEOUT: '60000'
           CHECKIN_MAX_RETRIES: '1'
           SCREENSHOT_MODE: 'failed_only'
+          # 远程 YOLO 验证码 API（模型部署在 huasuanyun，配置后主链路走 API，未配置走本地降级）
+          CAPTCHA_API_URL: ${{ secrets.CAPTCHA_API_URL }}
+          CAPTCHA_API_TOKEN: ${{ secrets.CAPTCHA_API_TOKEN }}
         run: |
           python rainyun.py
 

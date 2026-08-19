@@ -44,3 +44,9 @@ memory/
 # ===== 项目本地文档（不入库） =====
 AGENTS.md
 CLAUDE.md
+
+# ===== YOLO / 孪生匹配模型 · 核心生产资料（不入库） =====
+# 训练数据、标注、模型文件均不上传 GitHub
+dataset/
+rainyun/captcha/models/
+X-AnyLabeling*.exe

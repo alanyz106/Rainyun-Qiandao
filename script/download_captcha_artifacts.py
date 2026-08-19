@@ -82,6 +82,9 @@ def normalize_extracted_dir(dest: Path, run_number: int) -> Path:
     def collect_and_move(src: Path):
         """把 src 下的日期目录/账号目录移动到 final_root。"""
         for item in src.iterdir():
+            if item == final_root:
+                # src 本身已含 captcha 目录（artifact 以 captcha 为根），跳过避免自移入
+                continue
             if item.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", item.name):
                 dst = final_root / item.name
                 if dst.exists():
