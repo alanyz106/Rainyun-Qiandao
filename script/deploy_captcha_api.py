@@ -46,10 +46,10 @@ def main():
     args = parser.parse_args()
 
     if args.restart:
-        run(f'ssh {HOST} "cd {REMOTE_DIR} && pkill -f captcha_api_server.py; '
-            f'TOKEN=$(cat api_token.txt) && CAPTCHA_API_TOKEN=$TOKEN setsid nohup '
-            f'./venv/bin/python captcha_api_server.py > api.log 2>&1 < /dev/null & '
-            f'sleep 2; tail -3 api.log"')
+        run(f'ssh {HOST} "cd {REMOTE_DIR} && pkill -f [c]aptcha_api_server.py; sleep 1; '
+            f'(TOKEN=$(cat api_token.txt) && CAPTCHA_API_TOKEN=$TOKEN setsid nohup '
+            f'./venv/bin/python captcha_api_server.py > api.log 2>&1 < /dev/null &); '
+            f'sleep 3; tail -3 api.log"')
         return
 
     if not (args.code or args.models):
@@ -64,13 +64,13 @@ def main():
         for f in LOCAL_FILES["models"]:
             run(f'scp {f} {HOST}:{REMOTE_DIR}/models/')
 
-    run(f'ssh {HOST} "cd {REMOTE_DIR} && pkill -f captcha_api_server.py; '
-        f'TOKEN=$(cat api_token.txt) && CAPTCHA_API_TOKEN=$TOKEN setsid nohup '
-        f'./venv/bin/python captcha_api_server.py > api.log 2>&1 < /dev/null & '
-        f'sleep 2; tail -3 api.log"')
+    run(f'ssh {HOST} "cd {REMOTE_DIR} && pkill -f [c]aptcha_api_server.py; sleep 1; '
+        f'(TOKEN=$(cat api_token.txt) && CAPTCHA_API_TOKEN=$TOKEN setsid nohup '
+        f'./venv/bin/python captcha_api_server.py > api.log 2>&1 < /dev/null &); '
+        f'sleep 3; tail -3 api.log"')
 
-    print("\n完成。检查: curl -s http://186.241.81.51:8501/health")
-    print("GitHub Secrets 需配置: CAPTCHA_API_URL=http://186.241.81.51:8501/solve, "
+    print("\n完成。检查: curl -s https://cococaptcha.duckdns.org/yolo/health")
+    print("GitHub Secrets 需配置: CAPTCHA_API_URL=https://cococaptcha.duckdns.org/yolo/solve, "
           "CAPTCHA_API_TOKEN=$(cat 服务器 api_token.txt)")
 
 

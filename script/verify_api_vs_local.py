@@ -10,7 +10,7 @@ import requests
 sys.path.insert(0, r"D:\Rainyun-Qiandao")
 from rainyun.captcha._yolo import solve_points
 
-API_URL = os.getenv("CAPTCHA_API_URL", "http://186.241.81.51:8501/solve")
+API_URL = os.getenv("CAPTCHA_API_URL", "https://cococaptcha.duckdns.org/yolo/solve")
 API_TOKEN = os.getenv("CAPTCHA_API_TOKEN", "").strip()
 if not API_TOKEN:
     print("请设置 CAPTCHA_API_TOKEN 环境变量")
