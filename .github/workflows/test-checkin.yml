@@ -13,10 +13,11 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # 2026-08-18 曾因 azure.archive.ubuntu.com 镜像不可达 apt-get 挂起 6h；加 timeout 保护
       - name: 安装中文字体并设置上海时区
         run: |
-          sudo apt-get update
-          sudo apt-get install -y fonts-wqy-zenhei tzdata
+          sudo timeout 120 apt-get update || true
+          sudo timeout 120 apt-get install -y fonts-wqy-zenhei tzdata || true
           sudo ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
           echo Asia/Shanghai | sudo tee /etc/timezone > /dev/null
 

@@ -24,10 +24,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # 2. 安装中文字体并设置上海时区
+      #    2026-08-18 曾因 azure.archive.ubuntu.com 镜像不可达，apt-get update 挂起 6h 被取消；
+      #    加 timeout 保护，字体装不上只影响截图中文显示，不影响签到主流程
       - name: 安装中文字体并设置上海时区
         run: |
-          sudo apt-get update
-          sudo apt-get install -y fonts-wqy-zenhei tzdata
+          sudo timeout 120 apt-get update || true
+          sudo timeout 120 apt-get install -y fonts-wqy-zenhei tzdata || true
           sudo ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
           echo Asia/Shanghai | sudo tee /etc/timezone > /dev/null
 
@@ -82,7 +84,8 @@ jobs:
           DEBUG: 'false'
           MAX_DELAY: '1'
           TIMEOUT: '60000'
-          CHECKIN_MAX_RETRIES: '0'
+          # 重试次数：免费代理时通时断，失败后重试会换新代理，0 次会导致坏代理直接放弃
+          CHECKIN_MAX_RETRIES: '2'
           # 2captcha API Key (可选，配置后使用2captcha破解验证码)
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
           # 远程 YOLO 验证码 API（模型部署在 huasuanyun，配置后主链路走 API，未配置走本地降级）

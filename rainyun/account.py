@@ -82,5 +82,15 @@ def load_cookies(driver, account_id):
         logger.info(f"已加载本地 Cookie")
         return True
     except Exception as e:
+        error_msg = str(e)
+        # 代理/网络类异常必须上抛（ERR_PROXY_CONNECTION_FAILED 等），
+        # 让上层 checkin.py 的 WebDriverException 捕获分支标记 proxy_failed，
+        # 重试时才能换新代理。若在此吞掉，坏代理会被复用导致重复失败。
+        if any(kw in error_msg for kw in (
+            "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
+            "ERR_TIMED_OUT", "ERR_CONNECTION", "ERR_CERT", "ERR_SSL",
+            "Timed out receiving message from renderer",
+        )):
+            raise
         logger.warning(f"加载 Cookie 失败: {e}")
         return False

@@ -327,6 +327,14 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
             if ssl_blocked:
                 proxy_failed = True
                 logger_adapter.error("检测到代理 SSL 拦截（MITM），标记 proxy_failed 以便重试换代理")
+            # 代理已配置但页面几乎空白：免费代理时通时断，验证阶段通过不代表浏览器会话可用，
+            # 常见表现为 ERR_PROXY_CONNECTION_FAILED 后页面 JS 未渲染、body 无文字。
+            # 有代理 + 页面空白 → 判定代理失效，标记 proxy_failed 让重试换新代理。
+            if proxy and len(body_text.strip()) < 20:
+                proxy_failed = True
+                logger_adapter.error(
+                    "检测到代理已配置但页面空白（body 无文字），疑似代理失效，标记 proxy_failed 以便重试换代理"
+                )
             screenshot_path = save_screenshot(driver, current_user, status="failure")
             return {
                 'status': False,
