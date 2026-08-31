@@ -1,0 +1,18 @@
+{
+  "outcome": "retry",
+  "attempt_index": 1,
+  "account_prefix": "coc_ty",
+  "captured_at": "2026-08-31T13:37:37+08:00",
+  "files": [
+    "captcha.jpg",
+    "sprite.jpg",
+    "sprite_1.jpg",
+    "sprite_2.jpg",
+    "sprite_3.jpg"
+  ],
+  "extra": {
+    "best_total_score": 3.0,
+    "use_fallback": false,
+    "assigned_scores": []
+  }
+}
