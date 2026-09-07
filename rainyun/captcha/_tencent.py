@@ -432,14 +432,6 @@ class TencentCaptchaProvider:
                     ActionChains(driver).move_to_element_with_offset(
                         slideBg, final_x, final_y
                     ).click().perform()
-                    # 点击后立刻截图，用于确认序号标记是否出现、落在哪里
-                    try:
-                        shot = f"temp/screenshots/click_{attempt_index}_{len(final_click_positions)}_{int(time.time())}.png"
-                        os.makedirs(os.path.dirname(shot), exist_ok=True)
-                        driver.save_screenshot(shot)
-                        logger_adapter.info(f"[click-debug] 已保存点击后截图: {shot}")
-                    except Exception as _e:
-                        logger_adapter.debug(f"[click-debug] 截图失败: {_e}")
                     time.sleep(0.3)
 
                 confirm = wait.until(
