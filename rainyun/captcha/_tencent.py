@@ -455,7 +455,15 @@ class TencentCaptchaProvider:
                 result_elem = wait.until(
                     EC.visibility_of_element_located((By.XPATH, '//*[@id="tcOperation"]'))
                 )
-                if result_elem.get_attribute("class") == "tc-opera pointer show-success":
+                # 调试：打印实际 class。原判定用 == 精确匹配整个 class 字符串，
+                # 腾讯只要增删/重排任意 class 就会误判为失败（2026-09-07）。
+                actual_class = result_elem.get_attribute("class")
+                logger_adapter.info(
+                    f"[result-debug] tcOperation class=[{actual_class}] "
+                    f"期望=[tc-opera pointer show-success] "
+                    f"精确匹配={actual_class == 'tc-opera pointer show-success'}"
+                )
+                if actual_class == "tc-opera pointer show-success":
                     logger_adapter.info("验证码通过 🎉")
                     save_captcha_archive_bundle(logger_adapter, attempt_index, "pass", {
                         "best_total_score": best_total_score,
