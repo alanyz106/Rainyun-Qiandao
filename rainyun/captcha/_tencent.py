@@ -450,20 +450,28 @@ class TencentCaptchaProvider:
                 logger_adapter.info("提交验证码")
                 time.sleep(0.5)
                 confirm.click()
-                time.sleep(3)
 
+                # 轮询等待验证结果，而不是固定 sleep 后一次性读取。
+                # 实测（2026-09-07，15 次采样）：提交后 3 秒时 class 多为
+                #   tc-opera pointer            (10 次，中性态/结果未出)
+                #   tc-opera show-loading pointer (4 次，仍在加载)
+                #   tc-opera pointer show-error   (1 次，真失败)
+                # 固定 sleep(3) 会在结果返回前读取 → 误判为失败。
                 result_elem = wait.until(
                     EC.visibility_of_element_located((By.XPATH, '//*[@id="tcOperation"]'))
                 )
-                # 调试：打印实际 class。原判定用 == 精确匹配整个 class 字符串，
-                # 腾讯只要增删/重排任意 class 就会误判为失败（2026-09-07）。
-                actual_class = result_elem.get_attribute("class")
+                actual_class = ""
+                deadline = time.time() + max(timeout, 15)
+                while time.time() < deadline:
+                    actual_class = result_elem.get_attribute("class") or ""
+                    if "show-success" in actual_class or "show-error" in actual_class:
+                        break
+                    time.sleep(0.5)
                 logger_adapter.info(
-                    f"[result-debug] tcOperation class=[{actual_class}] "
-                    f"期望=[tc-opera pointer show-success] "
-                    f"精确匹配={actual_class == 'tc-opera pointer show-success'}"
+                    f"[result-debug] tcOperation 最终 class=[{actual_class}]"
                 )
-                if actual_class == "tc-opera pointer show-success":
+                # 用包含判断而非全等：腾讯可能增删/重排 class（如加 show-loading）
+                if "show-success" in actual_class:
                     logger_adapter.info("验证码通过 🎉")
                     save_captcha_archive_bundle(logger_adapter, attempt_index, "pass", {
                         "best_total_score": best_total_score,
