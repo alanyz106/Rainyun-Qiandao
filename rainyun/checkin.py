@@ -397,15 +397,30 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
                         checkin_success = True
                         break
 
+                # 兜底：按钮自身没读到"已完成"时，只检查"每日签到"这一行内的文字。
+                # 原实现是在整个 <body> 里搜"已完成"，会命中页面上其它任务
+                # （关注B站号/加入用户群/关注淘宝店等）的"已完成"，导致签到
+                # 实际未生效却误报成功（2026-09-07 实测）。收窄到签到行内避免误判。
                 if not checkin_success:
                     try:
-                        body_text = driver.find_element(By.TAG_NAME, "body").text
-                        if "已完成" in body_text:
-                            logger_adapter.info("页面检测到'已完成'，签到验证通过")
+                        checkin_row_text = driver.find_element(
+                            By.XPATH,
+                            '//span[contains(text(), "每日签到")]/ancestor::div'
+                            '[contains(@class, "card")][1]'
+                        ).text
+                        if "已完成" in checkin_row_text:
+                            logger_adapter.info(
+                                f"每日签到行内检测到'已完成'，签到验证通过 "
+                                f"(行内文字: [{checkin_row_text.strip()[:60]}])"
+                            )
                             checkin_success = True
                             break
-                    except Exception:
-                        pass
+                        logger_adapter.debug(
+                            f"每日签到行内未出现'已完成'，当前行文字: "
+                            f"[{checkin_row_text.strip()[:60]}]"
+                        )
+                    except Exception as e:
+                        logger_adapter.debug(f"读取每日签到行失败: {e}")
 
                 if not checkin_success:
                     logger_adapter.warning(f"签到后按钮文字仍为 [领取奖励]，等待重试 ({retry_check+1}/5)")

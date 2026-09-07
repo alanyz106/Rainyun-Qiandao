@@ -423,6 +423,12 @@ class TencentCaptchaProvider:
                     x_offset, y_offset = float(-width / 2), float(-height / 2)
                     final_x = int(x_offset + x / width_raw * width)
                     final_y = int(y_offset + y / height_raw * height)
+                    # 调试日志：定位"坐标算对了但点击没生效"的问题（2026-09-07）
+                    logger_adapter.info(
+                        f"[click-debug] 原始坐标=({x},{y}) 原图尺寸={width_raw}x{height_raw} "
+                        f"slideBg style=[{style}] 解析宽高={width}x{height} "
+                        f"偏移=({x_offset},{y_offset}) 最终点击偏移=({final_x},{final_y})"
+                    )
                     ActionChains(driver).move_to_element_with_offset(
                         slideBg, final_x, final_y
                     ).click().perform()
@@ -436,12 +442,28 @@ class TencentCaptchaProvider:
                 logger_adapter.info("提交验证码")
                 time.sleep(0.5)
                 confirm.click()
-                time.sleep(3)
 
+                # 轮询等待验证结果，而不是固定 sleep 后一次性读取。
+                # 实测（2026-09-07，15 次采样）：提交后 3 秒时 class 多为
+                #   tc-opera pointer            (10 次，中性态/结果未出)
+                #   tc-opera show-loading pointer (4 次，仍在加载)
+                #   tc-opera pointer show-error   (1 次，真失败)
+                # 固定 sleep(3) 会在结果返回前读取 → 误判为失败。
                 result_elem = wait.until(
                     EC.visibility_of_element_located((By.XPATH, '//*[@id="tcOperation"]'))
                 )
-                if result_elem.get_attribute("class") == "tc-opera pointer show-success":
+                actual_class = ""
+                deadline = time.time() + max(timeout, 15)
+                while time.time() < deadline:
+                    actual_class = result_elem.get_attribute("class") or ""
+                    if "show-success" in actual_class or "show-error" in actual_class:
+                        break
+                    time.sleep(0.5)
+                logger_adapter.info(
+                    f"[result-debug] tcOperation 最终 class=[{actual_class}]"
+                )
+                # 用包含判断而非全等：腾讯可能增删/重排 class（如加 show-loading）
+                if "show-success" in actual_class:
                     logger_adapter.info("验证码通过 🎉")
                     save_captcha_archive_bundle(logger_adapter, attempt_index, "pass", {
                         "best_total_score": best_total_score,

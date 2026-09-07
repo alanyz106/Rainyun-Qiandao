@@ -51,6 +51,24 @@ class TwoCaptchaProvider:
             )
             return False
 
+        # 每轮开始都打印状态，便于判断是"key 没配/请求失败"还是"识别失败"。
+        # 原实现失败时只打一行"达到最大重试次数 5"，没有任何 API 层错误，
+        # 无法区分是 key 未配置、请求异常，还是真的识别不出来（2026-09-07）。
+        masked_key = (
+            f"{self.api_key[:4]}...{self.api_key[-4:]}(len={len(self.api_key)})"
+            if self.api_key else "<空>"
+        )
+        logger_adapter.info(
+            f"[2captcha] 第 {retry_stats['count'] + 1}/{self.max_retries} 轮开始 | "
+            f"api_key={masked_key} | max_retries={self.max_retries} | "
+            f"global_timeout={self.global_timeout}"
+        )
+        if not self.api_key:
+            logger_adapter.error(
+                "[2captcha] TWOCAPTCHA_API_KEY 未配置或为空 —— 备用方案无法工作，"
+                "后续轮次不会真正发出请求。请检查仓库 Secrets / 环境变量。"
+            )
+
         _start_time = retry_stats.get("_twocaptcha_start_time")
         if _start_time is None:
             _start_time = time.time()
@@ -87,6 +105,10 @@ class TwoCaptchaProvider:
             captcha_height = cv2.imread("temp/captcha.jpg").shape[0]
 
             click_coords = self._submit_to_2captcha(combined_path, logger_adapter, timeout)
+            logger_adapter.info(
+                f"[2captcha] 本轮提交返回: {click_coords} "
+                f"(共 {len(click_coords) if click_coords else 0} 个坐标)"
+            )
             if not click_coords:
                 logger_adapter.error("2captcha 未能返回有效坐标")
                 retry_stats["count"] += 1
