@@ -423,9 +423,23 @@ class TencentCaptchaProvider:
                     x_offset, y_offset = float(-width / 2), float(-height / 2)
                     final_x = int(x_offset + x / width_raw * width)
                     final_y = int(y_offset + y / height_raw * height)
+                    # 调试日志：定位"坐标算对了但点击没生效"的问题（2026-09-07）
+                    logger_adapter.info(
+                        f"[click-debug] 原始坐标=({x},{y}) 原图尺寸={width_raw}x{height_raw} "
+                        f"slideBg style=[{style}] 解析宽高={width}x{height} "
+                        f"偏移=({x_offset},{y_offset}) 最终点击偏移=({final_x},{final_y})"
+                    )
                     ActionChains(driver).move_to_element_with_offset(
                         slideBg, final_x, final_y
                     ).click().perform()
+                    # 点击后立刻截图，用于确认序号标记是否出现、落在哪里
+                    try:
+                        shot = f"temp/screenshots/click_{attempt_index}_{len(final_click_positions)}_{int(time.time())}.png"
+                        os.makedirs(os.path.dirname(shot), exist_ok=True)
+                        driver.save_screenshot(shot)
+                        logger_adapter.info(f"[click-debug] 已保存点击后截图: {shot}")
+                    except Exception as _e:
+                        logger_adapter.debug(f"[click-debug] 截图失败: {_e}")
                     time.sleep(0.3)
 
                 confirm = wait.until(
