@@ -42,7 +42,21 @@ class CompositeCaptchaProvider(CaptchaProvider):
             logger_adapter.warning(
                 "本地方案已耗尽重试次数，切换到 2captcha 备用方案..."
             )
-            self.fallback.solve(driver, timeout, retry_stats, logger_adapter)
+            # 关键：备用方案必须用【独立的重试计数】。
+            # 原先直接把主方案的 retry_stats 传下去，而 2captcha 一进门就检查
+            # count >= max_retries —— 主方案已把 count 累加到 5，
+            # 于是 2captcha 立即判定"已达到最大重试次数 5"并放弃，
+            # 从未真正发出过任何请求（2026-09-08 确认）。
+            fallback_stats = {
+                "count": 0,
+                "_fallback": True,
+                "_primary_retries_used": retry_stats.get("count", 0),
+            }
+            logger_adapter.warning(
+                f"[2captcha] 主方案已用 {retry_stats.get('count', 0)} 次重试，"
+                f"备用方案以独立计数启动"
+            )
+            self.fallback.solve(driver, timeout, fallback_stats, logger_adapter)
 
 
 class CaptchaFactory:
