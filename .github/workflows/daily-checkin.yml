@@ -88,6 +88,11 @@ jobs:
           CHECKIN_MAX_RETRIES: '2'
           # 2captcha API Key (可选，配置后使用2captcha破解验证码)
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
+          # 2captcha 是付费服务，重试上限封顶 2 次（用户指定）。
+          # 这里硬编码为 2 而不读 secret：secret 里可能配了更大的值，
+          # 封顶优先，避免意外产生大量计费请求。
+          TWOCAPTCHA_MAX_RETRIES: '2'
+          TWOCAPTCHA_GLOBAL_TIMEOUT: '120'
           # 远程 YOLO 验证码 API（模型部署在 huasuanyun，配置后主链路走 API，未配置走本地降级）
           CAPTCHA_API_URL: ${{ secrets.CAPTCHA_API_URL }}
           CAPTCHA_API_TOKEN: ${{ secrets.CAPTCHA_API_TOKEN }}

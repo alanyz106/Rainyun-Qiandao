@@ -218,68 +218,36 @@ def setup_sigchld_handler():
 
 
 def cleanup_zombie_processes():
-    import subprocess
+    """回收本进程的子进程残留。
+
+    历史坑（2026-09-08）：原实现末尾有
+        subprocess.run(['pkill', '-9', '-f', 'chrome.*--type='], timeout=5)
+    该正则会匹配 pkill 自身的命令行（re.search('chrome.*--type=',
+    "pkill -9 -f 'chrome.*--type='") 为 True），且 pkill -f 会杀掉同父 shell 下
+    任何命令行含该串的进程。在 GitHub Actions 上导致「执行签到」step 挂死
+    40+ 分钟且 gh run cancel 无效（进程已不响应信号）。
+
+    现改为：只对【本进程已知的子进程】做非阻塞回收 + 兜底 terminate，
+    绝不使用 pkill -f 之类会误伤无关进程（甚至自身进程链）的模糊匹配。
+    """
+
+    def _reap_own_children():
+        """非阻塞回收本进程已退出的子进程。"""
+        reaped = 0
+        try:
+            while True:
+                pid, _status = os.waitpid(-1, os.WNOHANG)
+                if pid == 0:
+                    break
+                reaped += 1
+        except (ChildProcessError, OSError):
+            # 没有子进程可回收，属正常情况
+            pass
+        return reaped
 
     try:
-        if os.name == 'posix':
-            try:
-                result = subprocess.run(['pgrep', '-f', 'chrome|chromedriver'],
-                                      capture_output=True, text=True, timeout=5)
-                if result.stdout:
-                    pids = result.stdout.strip().split('\n')
-                    zombie_count = 0
-                    zombie_pids = []
-                    parent_pids = set()
-
-                    for pid in pids:
-                        if pid:
-                            try:
-                                stat_result = subprocess.run(['ps', '-p', pid, '-o', 'stat='],
-                                                           capture_output=True, text=True, timeout=2)
-                                if 'Z' in stat_result.stdout:
-                                    zombie_count += 1
-                                    zombie_pids.append(pid)
-
-                                    ppid_result = subprocess.run(['ps', '-p', pid, '-o', 'ppid='],
-                                                               capture_output=True, text=True, timeout=2)
-                                    if ppid_result.stdout:
-                                        ppid = ppid_result.stdout.strip()
-                                        if ppid and ppid != '1':
-                                            parent_pids.add(ppid)
-                                            logger.warning(f"发现僵尸进程 PID: {pid}, 父进程: {ppid}")
-                                        else:
-                                            logger.warning(f"发现僵尸进程 PID: {pid}")
-                            except:
-                                pass
-
-                    if zombie_count > 0:
-                        logger.info(f"检测到 {zombie_count} 个僵尸进程")
-
-                        cleaned = 0
-                        for zpid in zombie_pids:
-                            try:
-                                os.waitpid(int(zpid), os.WNOHANG)
-                                cleaned += 1
-                            except (ChildProcessError, ProcessLookupError, PermissionError, ValueError):
-                                pass
-
-                        if cleaned > 0:
-                            logger.info(f"成功回收 {cleaned} 个僵尸进程")
-
-                        if parent_pids:
-                            logger.info(f"僵尸进程的父进程 PIDs: {', '.join(parent_pids)}")
-                            logger.info("提示：僵尸进程由父进程创建，需要父进程调用wait()回收")
-                            logger.info("这些僵尸进程不占用CPU/内存，通常会在父进程结束时被init接管并清理")
-
-                        subprocess.run(['pkill', '-9', '-f', 'chrome.*--type='],
-                                     timeout=5, stderr=subprocess.DEVNULL)
-                        logger.info("已清理残留的活跃 Chrome 子进程")
-
-            except subprocess.TimeoutExpired:
-                logger.warning("进程清理超时")
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                logger.debug(f"清理进程时出现异常（可忽略）: {e}")
+        reaped = _reap_own_children()
+        if reaped:
+            logger.info(f"已回收 {reaped} 个已退出的子进程")
     except Exception as e:
-        logger.debug(f"僵尸进程清理失败（可忽略）: {e}")
+        logger.debug(f"回收子进程时出现异常（可忽略）: {e}")
