@@ -24,8 +24,13 @@ class TwoCaptchaProvider:
     API_BASE = "https://2captcha.com"
 
     def __init__(self, max_retries=5, global_timeout=300):
+        # 2captcha 是付费服务，硬封顶 2 次（2026-09-08 用户指定）。
+        # 即便环境变量配了更大的值也强制收敛到 2，避免意外产生大量计费请求。
+        _HARD_CAP_RETRIES = 2
         self.api_key = os.getenv("TWOCAPTCHA_API_KEY", "").strip()
-        self.max_retries = int(os.getenv("TWOCAPTCHA_MAX_RETRIES", max_retries))
+        self.max_retries = min(
+            int(os.getenv("TWOCAPTCHA_MAX_RETRIES", max_retries)), _HARD_CAP_RETRIES
+        )
         self.global_timeout = int(os.getenv("TWOCAPTCHA_GLOBAL_TIMEOUT", global_timeout))
 
     def solve(self, driver, timeout, retry_stats, logger_adapter):
