@@ -535,8 +535,16 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
                         if os.name == 'posix' and pid:
                             try:
                                 logger_adapter.info(f"正在清理 PID {pid} 的衍生进程...")
+                                # 注意用 -P（按父进程 PID）而非 -f（按命令行模糊匹配）：
+                                # -f 会误伤命令行含该模式的无关进程甚至自身进程链
+                                # （2026-09-08 曾导致 Actions step 挂死 40+ 分钟）。
+                                # 显式加 timeout，避免异常情况下挂住不返回。
                                 subprocess.run(['pkill', '-9', '-P', str(pid)],
-                                             stderr=subprocess.DEVNULL)
+                                             stderr=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL,
+                                             timeout=10)
+                            except subprocess.TimeoutExpired:
+                                logger_adapter.debug(f"清理 PID {pid} 衍生进程超时，已跳过")
                             except Exception:
                                 pass
 
