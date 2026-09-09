@@ -6,7 +6,9 @@ Rainyun-Qiandao - 雨云每日签到
 基于原项目重构：https://github.com/LeapYa/Rainyun-Qiandao
 """
 
+import logging
 import os
+import sys
 import time
 from datetime import timedelta
 
@@ -112,3 +114,41 @@ if __name__ == "__main__":
             logger.info("程序执行完成")
         else:
             logger.error("签到任务失败：所有账号均未成功")
+
+        # ---------------------------------------------------------------
+        # 退出前保底：确保进程能干净退出，不留任何持有 stdout 管道的残留。
+        #
+        # 背景：GitHub Actions 判断 step 结束的依据是「子进程退出 + stdout 管道关闭」。
+        # 只要还有一个孙进程（chrome --type=renderer 等）活着并继承了管道写端，
+        # runner 就会一直等，直到失联超时（约 50 分钟）才报
+        # "The hosted runner lost communication with the server"。
+        #
+        # 这里做三件事：
+        #   1) 非阻塞回收所有已退出的子进程，清掉僵尸
+        #   2) 显式 flush 标准流，保证日志完整落盘（os._exit 会跳过缓冲）
+        #   3) 用 os._exit 直接退出，绕开以下可能卡住的正常退出路径：
+        #        - 非守护线程 / ThreadPoolExecutor 未完全回收
+        #        - atexit 钩子里 selenium、onnxruntime 的清理卡死
+        #        - SIGCHLD handler 中 waitpid 与解释器退出流程的竞争
+        # ---------------------------------------------------------------
+        try:
+            while True:
+                wpid, _ = os.waitpid(-1, os.WNOHANG)
+                if wpid == 0:
+                    break
+        except (ChildProcessError, OSError):
+            pass
+        except Exception:
+            pass
+
+        try:
+            for _stream in (sys.stdout, sys.stderr):
+                try:
+                    _stream.flush()
+                except Exception:
+                    pass
+            logging.shutdown()
+        except Exception:
+            pass
+
+        os._exit(0 if success else 1)

@@ -24,6 +24,64 @@ from rainyun.report import generate_html_report, generate_markdown_report, gener
 logger = logging.getLogger(__name__)
 
 
+def _kill_process_tree(root_pid, log=None):
+    """按 PID 树精确终止残留进程（先叶后根），绝不使用 pkill -f 模糊匹配。
+
+    为什么需要按树清理：
+      chromedriver -> chrome 主进程 -> renderer/gpu/zygote(--type=...) 孙进程
+    只 `pkill -P <chromedriver_pid>` 杀不到孙进程。这些残留会继续持有
+    Actions step 的 stdout 管道，runner 因此永远等不到管道关闭，
+    表现为「脚本已全部跑完，但 step 仍挂死数十分钟」。
+
+    安全性：仅遍历 root_pid 自己这棵子树的 PID，不接触任何无关进程，
+    也绝不会匹配到本进程自身或 runner 的进程链（这正是旧 -f 写法的致命问题）。
+    """
+    import subprocess as _sp
+
+    if not root_pid or root_pid <= 1:
+        return
+
+    def _children_of(pid):
+        """返回 pid 的直接子进程 PID 列表。"""
+        try:
+            out = _sp.run(['pgrep', '-P', str(pid)],
+                          capture_output=True, text=True, timeout=5)
+            return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+        except Exception:
+            return []
+
+    killed = []
+
+    def _kill(pid):
+        try:
+            _sp.run(['kill', '-9', str(pid)],
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=5)
+            killed.append(pid)
+        except Exception:
+            pass
+
+    # 必须「递归后序」：先杀完所有子孙，最后才杀当前节点。
+    # 不能先收集再逆序 kill —— 一旦父进程被 SIGKILL，其子进程会立刻被 init
+    # 接管，pgrep -P 就查不到了，后续遍历会漏杀整棵子树（实测踩过此坑）。
+    def _walk(pid, depth=0):
+        if depth > 32:  # 防御性上限，避免异常进程链导致深递归
+            return
+        for kid in _children_of(pid):
+            _walk(kid, depth + 1)
+            _kill(kid)
+
+    # 1) 先自底向上清掉整棵子树
+    _walk(root_pid)
+
+    # 2) 再处理根进程本身。此处不依赖调用方：
+    #    driver.quit() 之后 chromedriver 通常已退出（kill 是安全的 no-op），
+    #    但若它仍存活并持有管道，必须一并回收，否则 step 依旧卡住。
+    _kill(root_pid)
+
+    if killed and log is not None:
+        log.debug(f"已清理 {len(killed)} 个残留进程 (root={root_pid}): {killed}")
+
+
 def _is_ssl_blocked_text(text):
     """检测页面文字是否为 SSL/证书警告页（代理 MITM 或连接不安全）。
     headless Chrome 拒绝 MITM 代理的伪造证书时会显示 "Your connection is not private"。
@@ -535,16 +593,17 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
                         if os.name == 'posix' and pid:
                             try:
                                 logger_adapter.info(f"正在清理 PID {pid} 的衍生进程...")
-                                # 注意用 -P（按父进程 PID）而非 -f（按命令行模糊匹配）：
+                                # 按 PID 树精确清理，绝不使用 -f 模糊匹配：
                                 # -f 会误伤命令行含该模式的无关进程甚至自身进程链
                                 # （2026-09-08 曾导致 Actions step 挂死 40+ 分钟）。
-                                # 显式加 timeout，避免异常情况下挂住不返回。
-                                subprocess.run(['pkill', '-9', '-P', str(pid)],
-                                             stderr=subprocess.DEVNULL,
-                                             stdout=subprocess.DEVNULL,
-                                             timeout=10)
-                            except subprocess.TimeoutExpired:
-                                logger_adapter.debug(f"清理 PID {pid} 衍生进程超时，已跳过")
+                                #
+                                # 只 pkill -P <chromedriver_pid> 是不够的：那只能杀掉
+                                # chrome 主进程，而 renderer/gpu/zygote 等 --type= 子进程
+                                # 是 chrome 的孙进程，杀不到。这些残留会继续持有
+                                # Actions step 的 stdout 管道，使 runner 永远等不到
+                                # 管道关闭 —— 表现就是「脚本已跑完但 step 挂死 50 分钟」。
+                                # 因此这里按整个进程树精确回收：先叶后根，逐级 kill。
+                                _kill_process_tree(pid, logger_adapter)
                             except Exception:
                                 pass
 

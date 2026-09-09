@@ -11,6 +11,11 @@ on:
 jobs:
   checkin:
     runs-on: ubuntu-latest
+    # 正常签到只需 2-3 分钟；10 分钟足够覆盖「换新代理重试 + 验证码多轮」。
+    # 2026-09-08/09 曾因进程收尾挂死，step 卡 50 分钟后被判
+    # "hosted runner lost communication"。加硬超时后即使再挂也能快速失败，
+    # 而不是拖满 GitHub 默认 360 分钟或等服务端失联检测。
+    timeout-minutes: 10
     env:
       TZ: Asia/Shanghai
     permissions:
