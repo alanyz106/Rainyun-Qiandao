@@ -1,0 +1,28 @@
+{
+  "outcome": "pass",
+  "attempt_index": 1,
+  "account_prefix": "coc_ty",
+  "captured_at": "2026-09-23T12:48:25+08:00",
+  "files": [
+    "captcha.jpg",
+    "spec_1.jpg",
+    "spec_2.jpg",
+    "spec_3.jpg",
+    "spec_4.jpg",
+    "spec_5.jpg",
+    "sprite.jpg",
+    "sprite_1.jpg",
+    "sprite_2.jpg",
+    "sprite_3.jpg"
+  ],
+  "extra": {
+    "best_total_score": 97.508565766173,
+    "use_fallback": false,
+    "siamese_ok": false,
+    "click_positions": [
+      "281,193",
+      "596,28",
+      "445,355"
+    ]
+  }
+}
