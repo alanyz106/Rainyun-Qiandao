@@ -1,0 +1,30 @@
+{
+  "outcome": "pass",
+  "attempt_index": 0,
+  "account_prefix": "coc_ty",
+  "captured_at": "2026-09-25T13:06:05+08:00",
+  "files": [
+    "captcha.jpg",
+    "combined_captcha.jpg",
+    "sprite.jpg",
+    "sprite_1.jpg",
+    "sprite_2.jpg",
+    "sprite_3.jpg"
+  ],
+  "extra": {
+    "click_coords": [
+      [
+        546,
+        125
+      ],
+      [
+        383,
+        436
+      ],
+      [
+        64,
+        451
+      ]
+    ]
+  }
+}
